@@ -1,0 +1,234 @@
+---
+title: "Configure Celery Exporter via CE_ Environment Variables"
+description: "Use CE_ environment variables instead of CLI flags. Full mapping table plus Docker, Docker Compose, and Kubernetes configuration examples."
+---
+
+Celery Exporter supports every CLI flag as an environment variable. This page covers the naming convention, the full variable mapping table, and deployment-specific examples for Docker, Docker Compose, and Kubernetes.
+
+## Naming convention
+
+Transform any CLI flag into an environment variable by:
+
+1. Dropping the leading `--`
+2. Converting all hyphens to underscores
+3. Uppercasing the entire name
+4. Prepending `CE_`
+
+For example: `--worker-timeout` → `CE_WORKER_TIMEOUT`
+
+<Note>
+CLI flags always take precedence over environment variables when both are supplied. If you pass `--broker-url` on the command line and also set `CE_BROKER_URL`, the CLI value wins.
+</Note>
+
+## Complete variable reference
+
+| Environment variable | CLI flag | Default | Description |
+|---|---|---|---|
+| `CE_BROKER_URL` | `--broker-url` | *(required)* | Broker connection URL |
+| `CE_HOST` | `--host` | `0.0.0.0` | Exporter listen address |
+| `CE_PORT` | `--port` | `9808` | Exporter listen port |
+| `CE_BROKER_TRANSPORT_OPTION` | `--broker-transport-option` | — | Kombu transport option (`key=value`) |
+| `CE_BROKER_SSL_OPTION` | `--broker-ssl-option` | — | TLS/SSL option (`key=value`) |
+| `CE_ACCEPT_CONTENT` | `--accept-content` | — | Accepted serialization formats, comma-separated |
+| `CE_RETRY_INTERVAL` | `--retry-interval` | `0` | Seconds between broker reconnect attempts |
+| `CE_WORKER_TIMEOUT` | `--worker-timeout` | `300` | Seconds before marking a worker offline |
+| `CE_PURGE_OFFLINE_WORKER_METRICS` | `--purge-offline-worker-metrics` | `600` | Seconds before removing a dead worker's metric series |
+| `CE_GENERIC_HOSTNAME_TASK_SENT_METRIC` | `--generic-hostname-task-sent-metric` | `false` | Use `generic` as hostname label on `celery_task_sent_total` |
+| `CE_QUEUES` | `--queues` / `-Q` | — | Comma-separated queue names to pre-seed |
+| `CE_DEFAULT_QUEUE_NAME` | `--default-queue-name` | `celery` | Fallback queue name label for tasks without queue info |
+| `CE_METRIC_PREFIX` | `--metric-prefix` | `celery_` | Prefix for all metric names |
+| `CE_STATIC_LABEL` | `--static-label` | — | Static label added to all metrics (`key=value`) |
+| `CE_BUCKETS` | `--buckets` | Prometheus defaults | Histogram bucket boundaries, comma-separated |
+| `CE_LOG_LEVEL` | `--log-level` | `INFO` | Log verbosity level |
+
+## Docker
+
+Pass environment variables with the `-e` flag. The `CE_BROKER_URL` variable is the minimum required configuration:
+
+```bash
+docker run -p 9808:9808 \
+  -e CE_BROKER_URL=redis://redis:6379/0 \
+  danihodovic/celery-exporter
+```
+
+Multiple variables:
+
+```bash
+docker run -p 9808:9808 \
+  -e CE_BROKER_URL=redis://redis:6379/0 \
+  -e CE_RETRY_INTERVAL=5 \
+  -e CE_WORKER_TIMEOUT=120 \
+  -e CE_LOG_LEVEL=DEBUG \
+  danihodovic/celery-exporter
+```
+
+Pass `CE_GENERIC_HOSTNAME_TASK_SENT_METRIC` as the string `true` to enable it:
+
+```bash
+docker run -p 9808:9808 \
+  -e CE_BROKER_URL=redis://redis:6379/0 \
+  -e CE_GENERIC_HOSTNAME_TASK_SENT_METRIC=true \
+  danihodovic/celery-exporter
+```
+
+## Docker Compose
+
+Use the `environment:` map in your service definition. String values that contain special characters (such as passwords) should be quoted.
+
+```yaml docker-compose.yml
+services:
+  celery-exporter:
+    image: danihodovic/celery-exporter
+    ports:
+      - "9808:9808"
+    environment:
+      CE_BROKER_URL: redis://redis:6379/0
+      CE_RETRY_INTERVAL: "5"
+      CE_WORKER_TIMEOUT: "120"
+      CE_PURGE_OFFLINE_WORKER_METRICS: "600"
+      CE_METRIC_PREFIX: myapp_
+      CE_STATIC_LABEL: env=production
+      CE_LOG_LEVEL: INFO
+    depends_on:
+      - redis
+```
+
+<Tip>
+Keep sensitive values like broker credentials out of your Compose file. Use an `.env` file alongside `docker-compose.yml` and reference variables with the `${VAR}` syntax, or use Docker secrets for production deployments.
+</Tip>
+
+Using an `.env` file:
+
+```bash .env
+CE_BROKER_URL=redis://:secretpassword@redis:6379/0
+CE_RETRY_INTERVAL=5
+```
+
+```yaml docker-compose.yml
+services:
+  celery-exporter:
+    image: danihodovic/celery-exporter
+    ports:
+      - "9808:9808"
+    env_file:
+      - .env
+```
+
+## Kubernetes
+
+### Inline env vars
+
+For non-sensitive values, set environment variables directly in the pod spec:
+
+```yaml deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-exporter
+  template:
+    metadata:
+      labels:
+        app: celery-exporter
+    spec:
+      containers:
+        - name: celery-exporter
+          image: danihodovic/celery-exporter
+          ports:
+            - containerPort: 9808
+          env:
+            - name: CE_BROKER_URL
+              value: "redis://redis:6379/0"
+            - name: CE_RETRY_INTERVAL
+              value: "5"
+            - name: CE_WORKER_TIMEOUT
+              value: "120"
+            - name: CE_LOG_LEVEL
+              value: "INFO"
+```
+
+### Using a Secret for broker credentials
+
+Store the broker URL in a Kubernetes Secret and reference it in the pod spec with `secretKeyRef`:
+
+<Steps>
+
+<Step title="Create the Secret">
+
+```bash
+kubectl create secret generic celery-exporter-secrets \
+  --from-literal=broker-url='redis://:secretpassword@redis:6379/0'
+```
+
+</Step>
+
+<Step title="Reference the Secret in the Deployment">
+
+```yaml deployment.yaml
+env:
+  - name: CE_BROKER_URL
+    valueFrom:
+      secretKeyRef:
+        name: celery-exporter-secrets
+        key: broker-url
+  - name: CE_RETRY_INTERVAL
+    value: "5"
+```
+
+</Step>
+
+</Steps>
+
+### Using envFrom with a ConfigMap
+
+For non-sensitive bulk configuration, load all variables from a ConfigMap at once:
+
+```yaml configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: celery-exporter-config
+data:
+  CE_RETRY_INTERVAL: "5"
+  CE_WORKER_TIMEOUT: "120"
+  CE_PURGE_OFFLINE_WORKER_METRICS: "600"
+  CE_LOG_LEVEL: "INFO"
+  CE_METRIC_PREFIX: "celery_"
+```
+
+```yaml deployment.yaml
+spec:
+  containers:
+    - name: celery-exporter
+      image: danihodovic/celery-exporter
+      envFrom:
+        - configMapRef:
+            name: celery-exporter-config
+        - secretRef:
+            name: celery-exporter-secrets
+```
+
+<Warning>
+`CE_BROKER_TRANSPORT_OPTION` and `CE_STATIC_LABEL` accept a single `key=value` string when set as environment variables. For multiple options or labels, use CLI flags or the Helm chart's values, which support lists natively.
+</Warning>
+
+## What's next?
+
+<CardGroup cols={2}>
+  <Card title="CLI options reference" icon="sliders" href="/configuration/cli-options">
+    Full documentation for every CLI flag with types, defaults, and examples.
+  </Card>
+  <Card title="Broker options" icon="database" href="/configuration/broker-options">
+    Transport options, SSL configuration, and Sentinel setup.
+  </Card>
+  <Card title="Kubernetes deployment" icon="cubes" href="/deployment/kubernetes">
+    Deploy with the official Helm chart and configure ServiceMonitor.
+  </Card>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Run with docker run or Docker Compose.
+  </Card>
+</CardGroup>

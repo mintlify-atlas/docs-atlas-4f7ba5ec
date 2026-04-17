@@ -1,0 +1,364 @@
+---
+title: "Deploy Celery Exporter on Kubernetes with Helm"
+description: "Install the Celery Exporter Helm chart on Kubernetes, configure broker secrets, enable ServiceMonitor for Prometheus Operator, and set liveness probes."
+---
+
+Celery Exporter ships an official Helm chart that handles the Deployment, Service, ServiceAccount, and optional ServiceMonitor resources. This page walks through adding the Helm repository, installing the chart, configuring all `values.yaml` options, connecting to a broker via Kubernetes Secrets, enabling the Prometheus Operator `ServiceMonitor`, and managing upgrades and uninstalls.
+
+## Prerequisites
+
+- Helm 3 installed and configured (`helm version` should show v3.x)
+- `kubectl` connected to your target cluster
+- A running Celery broker (Redis or RabbitMQ) reachable from within the cluster
+- (Optional) Prometheus Operator installed if you want to use `ServiceMonitor`
+
+## Installation
+
+<Steps>
+
+<Step title="Add the Helm repository">
+
+```bash
+helm repo add danihodovic https://danihodovic.github.io/celery-exporter/
+helm repo update
+```
+
+</Step>
+
+<Step title="Install the chart">
+
+Pass the broker URL at install time using the `--set` flag:
+
+```bash
+helm install celery-exporter danihodovic/celery-exporter \
+  --set env[0].name=CE_BROKER_URL \
+  --set env[0].value=redis://redis:6379/0
+```
+
+Or supply a values file (recommended for anything beyond a quick test):
+
+```bash
+helm install celery-exporter danihodovic/celery-exporter \
+  --values my-values.yaml
+```
+
+</Step>
+
+<Step title="Verify the installation">
+
+Check that the pod is running:
+
+```bash
+kubectl get pods -l app.kubernetes.io/name=celery-exporter
+```
+
+Forward port `9808` locally and test the metrics endpoint:
+
+```bash
+kubectl port-forward svc/celery-exporter 9808:9808
+curl http://localhost:9808/metrics
+```
+
+</Step>
+
+</Steps>
+
+## All values.yaml options
+
+The chart version `0.9.0` ships with the following configurable values. Override any of them in a custom values file or with `--set`.
+
+```yaml values.yaml
+# Number of exporter pod replicas
+replicaCount: 1
+
+image:
+  repository: danihodovic/celery-exporter
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion (0.12.0)
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Whether to create a ServiceAccount for the pod
+  create: true
+  annotations: {}
+  # Use a specific name; otherwise one is generated from the fullname template
+  name: ""
+
+# Environment variables injected into the exporter container
+env: []
+  # Plain value:
+  # - name: CE_BROKER_URL
+  #   value: redis://redis:6379/0
+  # From a Kubernetes Secret:
+  # - name: CE_BROKER_URL
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: MY_SECRET
+  #       key: MY_SECRET_KEY
+
+podAnnotations: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 9808
+  annotations: {}
+  # Enable Prometheus scraping via pod annotations instead of ServiceMonitor:
+  #   prometheus.io/scrape: "true"
+  #   prometheus.io/port: "9808"
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: celery-exporter.example
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+serviceMonitor:
+  enabled: false
+  additionalLabels: {}
+  # jobLabel: "app.kubernetes.io/name"
+  namespace: ""
+  namespaceSelector: {}
+  scrapeInterval: 30s
+  # honorLabels: true
+  targetLabels: []
+  relabelings: []
+  metricRelabelings: []
+
+resources: {}
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+# Liveness and readiness probe timeout values (probe path is /health)
+livenessProbe: {}
+  # timeoutSeconds: 5
+  # failureThreshold: 5
+  # periodSeconds: 10
+  # successThreshold: 1
+
+readinessProbe: {}
+  # timeoutSeconds: 15
+  # failureThreshold: 5
+  # periodSeconds: 10
+  # successThreshold: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+```
+
+## Supplying the broker URL
+
+<Tabs>
+  <Tab title="Plain value">
+    The simplest approach — suitable for non-sensitive broker URLs or development clusters:
+
+    ```bash
+    helm install celery-exporter danihodovic/celery-exporter \
+      --set env[0].name=CE_BROKER_URL \
+      --set env[0].value=redis://redis:6379/0
+    ```
+
+    Or in a values file:
+
+    ```yaml my-values.yaml
+    env:
+      - name: CE_BROKER_URL
+        value: redis://redis:6379/0
+    ```
+  </Tab>
+  <Tab title="Kubernetes Secret">
+    Store the broker URL in a Secret and reference it from the chart. First create the Secret:
+
+    ```bash
+    kubectl create secret generic celery-broker \
+      --from-literal=broker-url=redis://:mypassword@redis:6379/0
+    ```
+
+    Then reference it in your values file:
+
+    ```yaml my-values.yaml
+    env:
+      - name: CE_BROKER_URL
+        valueFrom:
+          secretKeyRef:
+            name: celery-broker
+            key: broker-url
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+Never commit broker credentials as plain values in a `values.yaml` file stored in version control. Use Kubernetes Secrets or a secrets management solution such as External Secrets Operator or Vault.
+</Warning>
+
+## ServiceMonitor for Prometheus Operator
+
+If you are running the Prometheus Operator, enable the `ServiceMonitor` resource so Prometheus discovers and scrapes the exporter automatically.
+
+```yaml my-values.yaml
+serviceMonitor:
+  enabled: true
+  # Scrape interval (default: 30s)
+  scrapeInterval: 30s
+  # Add labels that match your Prometheus Operator's serviceMonitorSelector
+  additionalLabels:
+    release: prometheus
+  # Restrict scraping to a specific namespace (defaults to the release namespace)
+  namespace: ""
+  namespaceSelector: {}
+```
+
+The resulting `ServiceMonitor` resource targets the `http` port on the exporter's `Service` and matches the pod using the chart's selector labels.
+
+<Note>
+The `additionalLabels` must include any labels your Prometheus Operator is configured to select via `serviceMonitorSelector`. A common label is `release: prometheus` for kube-prometheus-stack installations.
+</Note>
+
+## Liveness and readiness probes
+
+The chart configures both probes to `GET /health` on port `9808`. You can tune the timing values:
+
+```yaml my-values.yaml
+livenessProbe:
+  timeoutSeconds: 5
+  failureThreshold: 5
+  periodSeconds: 10
+  successThreshold: 1
+
+readinessProbe:
+  timeoutSeconds: 15
+  failureThreshold: 5
+  periodSeconds: 10
+  successThreshold: 1
+```
+
+The `/health` endpoint returns HTTP `200` when the exporter can reach the broker and HTTP `500` otherwise, making it a reliable liveness signal.
+
+## Complete example: Redis setup with ServiceMonitor
+
+The following values file covers a typical production configuration with Redis, a Secret-backed broker URL, tuned probes, resource limits, and `ServiceMonitor` enabled:
+
+```yaml my-values.yaml
+replicaCount: 1
+
+image:
+  repository: danihodovic/celery-exporter
+  tag: "0.12.0"
+
+env:
+  - name: CE_BROKER_URL
+    valueFrom:
+      secretKeyRef:
+        name: celery-broker
+        key: broker-url
+  - name: CE_RETRY_INTERVAL
+    value: "5"
+  - name: CE_WORKER_TIMEOUT
+    value: "300"
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+livenessProbe:
+  timeoutSeconds: 5
+  failureThreshold: 5
+  periodSeconds: 10
+
+readinessProbe:
+  timeoutSeconds: 15
+  failureThreshold: 5
+  periodSeconds: 10
+
+serviceMonitor:
+  enabled: true
+  scrapeInterval: 30s
+  additionalLabels:
+    release: prometheus
+
+podAnnotations:
+  prometheus.io/scrape: "false"  # Using ServiceMonitor instead
+```
+
+Install with this file:
+
+```bash
+helm install celery-exporter danihodovic/celery-exporter \
+  --values my-values.yaml \
+  --namespace monitoring \
+  --create-namespace
+```
+
+## Upgrading
+
+After changing your values file, upgrade the release:
+
+```bash
+helm upgrade celery-exporter danihodovic/celery-exporter \
+  --values my-values.yaml \
+  --namespace monitoring
+```
+
+To upgrade to a new chart version, first update the repo:
+
+```bash
+helm repo update
+helm upgrade celery-exporter danihodovic/celery-exporter \
+  --values my-values.yaml \
+  --namespace monitoring
+```
+
+Check the chart changelog before upgrading across major versions.
+
+## Uninstalling
+
+```bash
+helm uninstall celery-exporter --namespace monitoring
+```
+
+This removes all Kubernetes resources created by the chart. Secrets you created manually (such as `celery-broker`) are not deleted and must be removed separately if no longer needed.
+
+## What's next?
+
+<CardGroup cols={2}>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Run the exporter as a standalone Docker container or with Docker Compose.
+  </Card>
+  <Card title="Standalone binary" icon="file-code" href="/deployment/binary">
+    Deploy without Docker using a pre-built binary or a systemd service.
+  </Card>
+  <Card title="CLI options" icon="sliders" href="/configuration/cli-options">
+    Browse every flag and environment variable, including advanced broker options.
+  </Card>
+  <Card title="Prometheus alerts" icon="bell" href="/monitoring/prometheus-alerts">
+    Set up alerting rules for task failures and offline workers.
+  </Card>
+</CardGroup>

@@ -1,0 +1,257 @@
+---
+title: "Prometheus Alert Rules for Celery Exporter Monitoring"
+description: "Pre-built Prometheus alert rules for Celery Exporter covering task failure rates, queue length, and worker availability with configurable thresholds."
+---
+
+Celery Exporter ships a ready-to-use set of Prometheus alerting rules via the Celery mixin. The rules cover the three most operationally critical conditions: sustained task failure rates, growing queue backlogs, and workers going offline. Each rule uses real metric names exposed by the exporter, so they work without modification once the exporter is scraping.
+
+## Alert rules
+
+### CeleryTaskHighFailRate
+
+Fires when more than 5% of tasks for a given job, queue, and task name have failed over the past 10 minutes, and that condition has been true for at least 1 minute.
+
+**Severity:** warning
+
+```promql
+sum(
+  increase(
+    celery_task_failed_total{
+      job=~".*celery.*",
+      queue_name!~"None",
+      name!~"None"
+    }[10m]
+  )
+) by (job, namespace, queue_name, name)
+/
+(
+  sum(
+    increase(
+      celery_task_failed_total{
+        job=~".*celery.*",
+        queue_name!~"None",
+        name!~"None"
+      }[10m]
+    )
+  ) by (job, namespace, queue_name, name)
+  +
+  sum(
+    increase(
+      celery_task_succeeded_total{
+        job=~".*celery.*",
+        queue_name!~"None",
+        name!~"None"
+      }[10m]
+    )
+  ) by (job, namespace, queue_name, name)
+)
+* 100 > 5
+```
+
+### CeleryHighQueueLength
+
+Fires when any queue has more than 100 messages waiting and has remained above that threshold for 20 minutes.
+
+**Severity:** warning
+
+```promql
+sum(
+  celery_queue_length{
+    job=~".*celery.*",
+    queue_name!~"None"
+  }
+) by (job, namespace, queue_name)
+> 100
+```
+
+### CeleryWorkerDown
+
+Fires when `celery_worker_up` equals `0` for any worker for 15 consecutive minutes.
+
+**Severity:** warning
+
+```promql
+celery_worker_up{job=~".*celery.*"} == 0
+```
+
+## Complete alert file
+
+The full `prometheus_alerts.yaml` from the Celery mixin:
+
+```yaml prometheus_alerts.yaml
+"groups":
+- "name": "celery"
+  "rules":
+  - "alert": "CeleryTaskHighFailRate"
+    "annotations":
+      "dashboard_url": "https://grafana.com/d/celery-tasks-by-task-32s3/celery-tasks-by-task?var-job={{ $labels.job }}&var-queue_name={{ $labels.queue_name }}&var-task={{ $labels.name }}"
+      "description": "More than 5% tasks failed for the task {{ $labels.job }}/{{ $labels.queue_name }}/{{ $labels.name }} the past 10m."
+      "summary": "Celery high task fail rate."
+    "expr": |
+      sum(
+        increase(
+          celery_task_failed_total{
+            job=~".*celery.*",
+            queue_name!~"None",
+            name!~"None"
+          }[10m]
+        )
+      )  by (job, namespace, queue_name, name)
+      /
+      (
+        sum(
+          increase(
+            celery_task_failed_total{
+              job=~".*celery.*",
+              queue_name!~"None",
+              name!~"None"
+            }[10m]
+          )
+        )  by (job, namespace, queue_name, name)
+        +
+        sum(
+          increase(
+            celery_task_succeeded_total{
+              job=~".*celery.*",
+              queue_name!~"None",
+              name!~"None"
+            }[10m]
+          )
+        )  by (job, namespace, queue_name, name)
+      )
+      * 100 > 5
+    "for": "1m"
+    "labels":
+      "severity": "warning"
+  - "alert": "CeleryHighQueueLength"
+    "annotations":
+      "dashboard_url": "https://grafana.com/d/celery-tasks-overview-32s3/celery-tasks-overview?&var-job={{ $labels.job }}&var-queue_name={{ $labels.queue_name }}"
+      "description": "More than 100 tasks in the queue {{ $labels.job }}/{{ $labels.queue_name }} the past 20m."
+      "summary": "Celery high queue length."
+    "expr": |
+      sum(
+        celery_queue_length{
+          job=~".*celery.*",
+          queue_name!~"None"
+        }
+      )  by (job, namespace, queue_name)
+      > 100
+    "for": "20m"
+    "labels":
+      "severity": "warning"
+  - "alert": "CeleryWorkerDown"
+    "annotations":
+      "dashboard_url": "https://grafana.com/d/celery-tasks-overview-32s3/celery-tasks-overview?&var-job={{ $labels.job }}"
+      "description": "The Celery worker {{ $labels.job }}/{{ $labels.hostname }} is offline."
+      "summary": "A Celery worker is offline."
+    "expr": |
+      celery_worker_up{job=~".*celery.*"} == 0
+    "for": "15m"
+    "labels":
+      "severity": "warning"
+```
+
+## How to apply
+
+### Prometheus config
+
+Add the alert file to your `prometheus.yml` as a `rule_files` entry. Prometheus reloads rule files on startup and on `SIGHUP`.
+
+<CodeGroup>
+
+```yaml prometheus.yml
+global:
+  scrape_interval: 15s
+
+rule_files:
+  - "prometheus_alerts.yaml"
+
+scrape_configs:
+  - job_name: celery
+    static_configs:
+      - targets: ["localhost:9808"]
+```
+
+```yaml kubernetes-prometheusrule.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: celery-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: celery
+      rules:
+        - alert: CeleryTaskHighFailRate
+          expr: |
+            sum(
+              increase(celery_task_failed_total{job=~".*celery.*",queue_name!~"None",name!~"None"}[10m])
+            ) by (job, namespace, queue_name, name)
+            /
+            (
+              sum(increase(celery_task_failed_total{job=~".*celery.*",queue_name!~"None",name!~"None"}[10m])) by (job, namespace, queue_name, name)
+              +
+              sum(increase(celery_task_succeeded_total{job=~".*celery.*",queue_name!~"None",name!~"None"}[10m])) by (job, namespace, queue_name, name)
+            ) * 100 > 5
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Celery high task fail rate."
+            description: "More than 5% tasks failed for {{ $labels.job }}/{{ $labels.queue_name }}/{{ $labels.name }} the past 10m."
+        - alert: CeleryHighQueueLength
+          expr: |
+            sum(celery_queue_length{job=~".*celery.*",queue_name!~"None"}) by (job, namespace, queue_name) > 100
+          for: 20m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Celery high queue length."
+            description: "More than 100 tasks in {{ $labels.job }}/{{ $labels.queue_name }} the past 20m."
+        - alert: CeleryWorkerDown
+          expr: celery_worker_up{job=~".*celery.*"} == 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "A Celery worker is offline."
+            description: "Worker {{ $labels.job }}/{{ $labels.hostname }} is offline."
+```
+
+</CodeGroup>
+
+<Note>
+When using the Kubernetes `PrometheusRule` CRD, the labels on the resource must match the label selectors configured on your Prometheus operator instance. A common selector is `role: alert-rules`.
+</Note>
+
+## Customizing thresholds
+
+The alert thresholds are defined directly in the YAML. Edit the values to match your workload before applying:
+
+| Alert | Field to change | Default |
+|---|---|---|
+| `CeleryTaskHighFailRate` | `* 100 > 5` at the end of the `expr` | 5% |
+| `CeleryTaskHighFailRate` | `[10m]` range in `increase()` | 10 minutes |
+| `CeleryTaskHighFailRate` | `for: 1m` | 1 minute |
+| `CeleryHighQueueLength` | `> 100` at the end of the `expr` | 100 messages |
+| `CeleryHighQueueLength` | `for: 20m` | 20 minutes |
+| `CeleryWorkerDown` | `for: 15m` | 15 minutes |
+
+For example, to raise the queue length threshold to 500 messages and reduce the pending duration to 10 minutes:
+
+```yaml
+- alert: CeleryHighQueueLength
+  expr: |
+    sum(celery_queue_length{job=~".*celery.*",queue_name!~"None"}) by (job, namespace, queue_name)
+    > 500
+  for: 10m
+```
+
+## Generating custom rules via the mixin
+
+The alert file is generated from Jsonnet sources in the Celery mixin. If you need to add new alerts or change the alert structure (labels, annotations, grouping), generate the rules from the mixin source rather than editing the output YAML by hand.
+
+See the [Celery mixin alerts page](/mixin/alerts) for instructions on generating a customized `prometheus_alerts.yaml` from the mixin.

@@ -1,0 +1,282 @@
+---
+title: "Deploy Celery Exporter as a Standalone Binary"
+description: "Download the Celery Exporter binary from GitHub Releases, run it directly, manage it with systemd, or install it from PyPI using pip or pipx."
+---
+
+Celery Exporter can run without Docker as a self-contained binary or as a Python package installed from PyPI. This is the right choice for bare-metal servers, VMs, or any environment where you want to avoid container overhead. This page covers downloading the pre-built binary, running it directly, managing it as a systemd service, and installing from PyPI.
+
+## Downloading the binary
+
+The pre-built binary is produced with PyInstaller and published to GitHub Releases. It includes the Python runtime, so no Python installation is required on the host.
+
+<Steps>
+
+<Step title="Download the binary">
+
+<CodeGroup>
+
+```bash curl
+curl -L https://github.com/danihodovic/celery-exporter/releases/download/latest/celery-exporter \
+  -o ./celery-exporter
+```
+
+```bash wget
+wget -O ./celery-exporter \
+  https://github.com/danihodovic/celery-exporter/releases/download/latest/celery-exporter
+```
+
+</CodeGroup>
+
+To pin to a specific version, replace `latest` with a version tag such as `0.12.0`:
+
+```bash
+curl -L https://github.com/danihodovic/celery-exporter/releases/download/0.12.0/celery-exporter \
+  -o ./celery-exporter
+```
+
+</Step>
+
+<Step title="Make it executable">
+
+```bash
+chmod +x ./celery-exporter
+```
+
+</Step>
+
+<Step title="Run the exporter">
+
+```bash
+./celery-exporter --broker-url=redis://localhost:6379/0
+```
+
+The exporter starts and listens on port `9808` by default. Verify with:
+
+```bash
+curl http://localhost:9808/health
+curl http://localhost:9808/metrics
+```
+
+</Step>
+
+</Steps>
+
+## Using environment variables
+
+All CLI flags support a `CE_` environment variable equivalent. This is useful when you want to avoid exposing credentials in the process list or in shell history.
+
+```bash
+export CE_BROKER_URL=redis://localhost:6379/0
+export CE_RETRY_INTERVAL=5
+./celery-exporter
+```
+
+The variable naming rule: strip `--`, replace hyphens with underscores, and uppercase. For example:
+
+| CLI flag | Environment variable |
+|----------|----------------------|
+| `--broker-url` | `CE_BROKER_URL` |
+| `--port` | `CE_PORT` |
+| `--retry-interval` | `CE_RETRY_INTERVAL` |
+| `--worker-timeout` | `CE_WORKER_TIMEOUT` |
+| `--log-level` | `CE_LOG_LEVEL` |
+| `--metric-prefix` | `CE_METRIC_PREFIX` |
+| `--purge-offline-worker-metrics` | `CE_PURGE_OFFLINE_WORKER_METRICS` |
+
+## Common flags
+
+```bash
+./celery-exporter \
+  --broker-url=redis://localhost:6379/0 \
+  --port=9808 \
+  --retry-interval=5 \
+  --worker-timeout=300 \
+  --log-level=INFO
+```
+
+For broker transport options (for example, a key prefix or visibility timeout):
+
+```bash
+./celery-exporter \
+  --broker-url=redis://localhost:6379/0 \
+  --broker-transport-option global_keyprefix=myapp \
+  --broker-transport-option visibility_timeout=7200
+```
+
+## Running as a systemd service
+
+Running the exporter under systemd ensures it starts on boot, restarts on failure, and has structured logging via `journald`.
+
+<Steps>
+
+<Step title="Move the binary to a system path">
+
+```bash
+sudo mv ./celery-exporter /usr/local/bin/celery-exporter
+sudo chown root:root /usr/local/bin/celery-exporter
+```
+
+</Step>
+
+<Step title="Create a dedicated system user">
+
+Running as a dedicated non-root user limits the blast radius of any security issue:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin celery-exporter
+```
+
+</Step>
+
+<Step title="Create an environment file">
+
+Store credentials in a file readable only by root and the service user:
+
+```bash
+sudo mkdir -p /etc/celery-exporter
+sudo tee /etc/celery-exporter/env > /dev/null <<'EOF'
+CE_BROKER_URL=redis://localhost:6379/0
+CE_RETRY_INTERVAL=5
+CE_WORKER_TIMEOUT=300
+CE_LOG_LEVEL=INFO
+EOF
+sudo chmod 640 /etc/celery-exporter/env
+sudo chown root:celery-exporter /etc/celery-exporter/env
+```
+
+</Step>
+
+<Step title="Create the systemd unit file">
+
+```bash
+sudo tee /etc/systemd/system/celery-exporter.service > /dev/null <<'EOF'
+[Unit]
+Description=Celery Exporter - Prometheus exporter for Celery
+Documentation=https://github.com/danihodovic/celery-exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=celery-exporter
+Group=celery-exporter
+EnvironmentFile=/etc/celery-exporter/env
+ExecStart=/usr/local/bin/celery-exporter
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celery-exporter
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+</Step>
+
+<Step title="Enable and start the service">
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable celery-exporter
+sudo systemctl start celery-exporter
+```
+
+</Step>
+
+<Step title="Verify the service">
+
+```bash
+sudo systemctl status celery-exporter
+journalctl -u celery-exporter -f
+curl http://localhost:9808/health
+```
+
+</Step>
+
+</Steps>
+
+### Managing the service
+
+```bash
+# View logs
+journalctl -u celery-exporter --since "1 hour ago"
+
+# Restart after configuration change
+sudo systemctl restart celery-exporter
+
+# Stop the service
+sudo systemctl stop celery-exporter
+
+# Disable from starting at boot
+sudo systemctl disable celery-exporter
+```
+
+<Note>
+To update the binary, stop the service, replace `/usr/local/bin/celery-exporter` with the new version, then restart the service. The environment file does not need to change between binary updates.
+</Note>
+
+## Installing from PyPI
+
+If Python 3 is available on the host, you can install Celery Exporter directly from PyPI instead of using the pre-built binary.
+
+<Tabs>
+  <Tab title="pip">
+    ```bash
+    pip install prometheus-exporter-celery
+    celery-exporter --broker-url=redis://localhost:6379/0
+    ```
+  </Tab>
+  <Tab title="pipx">
+    `pipx` installs the package in an isolated virtual environment, avoiding conflicts with other Python packages:
+
+    ```bash
+    pipx install prometheus-exporter-celery
+    celery-exporter --broker-url=redis://localhost:6379/0
+    ```
+  </Tab>
+  <Tab title="pip with venv">
+    ```bash
+    python3 -m venv /opt/celery-exporter
+    /opt/celery-exporter/bin/pip install prometheus-exporter-celery
+    /opt/celery-exporter/bin/celery-exporter --broker-url=redis://localhost:6379/0
+    ```
+
+    For systemd, set `ExecStart` to the full path:
+
+    ```ini
+    ExecStart=/opt/celery-exporter/bin/celery-exporter
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+When using the PyPI install with systemd, update the binary by running `pip install --upgrade prometheus-exporter-celery` (or the `pipx upgrade` equivalent) and restarting the service.
+</Tip>
+
+## What's next?
+
+<CardGroup cols={2}>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Run the exporter as a Docker container or with Docker Compose.
+  </Card>
+  <Card title="Kubernetes deployment" icon="cubes" href="/deployment/kubernetes">
+    Deploy with the official Helm chart and configure ServiceMonitor.
+  </Card>
+  <Card title="CLI options" icon="sliders" href="/configuration/cli-options">
+    Browse every CLI flag and its environment variable equivalent.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    End-to-end guide from zero to a working Prometheus scrape target.
+  </Card>
+</CardGroup>

@@ -1,0 +1,234 @@
+---
+title: "Run Celery Exporter as a Docker Container"
+description: "Deploy Celery Exporter with docker run or Docker Compose. Covers port mapping, CE_ environment variables, health checks, and the multi-stage image build."
+---
+
+Celery Exporter is published as a Docker image on Docker Hub, making it straightforward to add to any containerized environment. This page covers running the exporter with `docker run`, configuring it via environment variables, composing it alongside your broker with Docker Compose, setting up health checks, and understanding the multi-stage image build.
+
+## Available image tags
+
+The image is published as `danihodovic/celery-exporter` on Docker Hub.
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Tracks the latest stable release. |
+| `0.12.0`, `0.11.0`, etc. | Pinned version tags for reproducible deployments. |
+
+<Tip>
+Pin to a specific version tag in production environments to avoid unexpected changes when new releases are published.
+</Tip>
+
+## Running with docker run
+
+<Steps>
+
+<Step title="Pull the image">
+
+```bash
+docker pull danihodovic/celery-exporter
+```
+
+</Step>
+
+<Step title="Run the exporter">
+
+Pass your broker URL with the `--broker-url` flag. The exporter binds to port `9808` inside the container; map it to the host with `-p`.
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis.service.consul/1
+```
+
+For a RabbitMQ broker:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=amqp://user:password@rabbitmq:5672/
+```
+
+</Step>
+
+<Step title="Verify the exporter is running">
+
+Check the metrics endpoint:
+
+```bash
+curl http://localhost:9808/metrics
+```
+
+Check the health endpoint:
+
+```bash
+curl http://localhost:9808/health
+```
+
+A healthy response from `/health` looks like:
+
+```text
+Connected to the broker redis://redis.service.consul/1
+```
+
+</Step>
+
+</Steps>
+
+## Using environment variables
+
+All CLI flags can be passed as environment variables using the `CE_` prefix. This is the preferred approach for container deployments where you want to avoid exposing credentials in process listings.
+
+```bash
+docker run -p 9808:9808 \
+  -e CE_BROKER_URL=redis://redis:6379/0 \
+  danihodovic/celery-exporter
+```
+
+The mapping follows a simple rule: replace `--` with `CE_`, convert hyphens to underscores, and uppercase the name. For example:
+
+| CLI flag | Environment variable |
+|----------|----------------------|
+| `--broker-url` | `CE_BROKER_URL` |
+| `--retry-interval` | `CE_RETRY_INTERVAL` |
+| `--worker-timeout` | `CE_WORKER_TIMEOUT` |
+| `--log-level` | `CE_LOG_LEVEL` |
+| `--metric-prefix` | `CE_METRIC_PREFIX` |
+
+## Advanced options
+
+### Broker transport options
+
+Pass additional Kombu transport options with `--broker-transport-option`. You can repeat the flag for multiple options:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis.service.consul/1 \
+  --broker-transport-option global_keyprefix=myapp \
+  --broker-transport-option visibility_timeout=7200
+```
+
+For nested options such as `sentinel_kwargs`, pass a JSON string:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=sentinel://sentinel.service.consul/1 \
+  --broker-transport-option master_name=my_master \
+  --broker-transport-option sentinel_kwargs="{\"password\": \"sentinelpass\"}"
+```
+
+### Retry on broker errors
+
+By default the exporter exits if it cannot connect to the broker. Use `--retry-interval` to reconnect automatically:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0 \
+  --retry-interval=5
+```
+
+## Docker Compose setup
+
+The following `docker-compose.yml` runs Celery Exporter alongside a Redis broker. Add your own Celery workers to the same Compose file using the `redis` service as their broker.
+
+```yaml docker-compose.yml
+version: "3.8"
+
+services:
+  redis:
+    image: redis:6
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  celery-exporter:
+    image: danihodovic/celery-exporter
+    ports:
+      - "9808:9808"
+    environment:
+      CE_BROKER_URL: redis://redis:6379/0
+      CE_RETRY_INTERVAL: "5"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9808/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+```
+
+Start the stack:
+
+```bash
+docker compose up -d
+```
+
+Verify the exporter is healthy:
+
+```bash
+docker compose ps
+curl http://localhost:9808/metrics
+```
+
+## Health check configuration
+
+The `/health` endpoint returns HTTP `200` when the exporter can reach the broker, and HTTP `500` when it cannot. Use it as both a liveness and readiness check.
+
+<Tabs>
+  <Tab title="docker run">
+    ```bash
+    docker run -p 9808:9808 \
+      --health-cmd="wget --spider -q http://localhost:9808/health || exit 1" \
+      --health-interval=10s \
+      --health-timeout=5s \
+      --health-retries=3 \
+      -e CE_BROKER_URL=redis://redis:6379/0 \
+      danihodovic/celery-exporter
+    ```
+  </Tab>
+  <Tab title="Docker Compose">
+    ```yaml docker-compose.yml
+    celery-exporter:
+      image: danihodovic/celery-exporter
+      healthcheck:
+        test: ["CMD", "wget", "--spider", "-q", "http://localhost:9808/health"]
+        interval: 10s
+        timeout: 5s
+        retries: 3
+        start_period: 5s
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+The `/health` endpoint retries the broker connection up to three times internally before returning a `500` response, so a single transient broker hiccup will not immediately trigger a health-check failure.
+</Note>
+
+## About the Docker image
+
+The image uses a two-stage build to keep the runtime image small and free of build tooling:
+
+- **Stage 1 (builder)** — based on `python:3.13-slim-bookworm`. Installs build dependencies (`libcurl4-openssl-dev`, `libssl-dev`, `build-essential`) and uses Poetry to install Python dependencies into a virtual environment at `/app/.venv`. The Poetry cache is removed at the end of this stage.
+- **Stage 2 (runtime)** — based on a fresh `python:3.13-slim-bookworm`. Copies only the virtual environment from the builder, adds the application source, creates a non-root `exporter` user, and sets the entrypoint to `python /app/cli.py`.
+
+The result is an image that runs as a non-root user with no build tools present in the final layer.
+
+## What's next?
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes deployment" icon="cubes" href="/deployment/kubernetes">
+    Deploy with the official Helm chart, configure ServiceMonitor, and manage secrets.
+  </Card>
+  <Card title="Standalone binary" icon="file-code" href="/deployment/binary">
+    Run the exporter without Docker using a pre-built binary or PyPI install.
+  </Card>
+  <Card title="CLI options" icon="sliders" href="/configuration/cli-options">
+    Browse every flag and its corresponding environment variable.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    End-to-end guide from zero to a working Prometheus scrape target.
+  </Card>
+</CardGroup>

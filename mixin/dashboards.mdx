@@ -1,0 +1,178 @@
+---
+title: "Generating and Deploying Celery Grafana Dashboards"
+description: "Generate Grafana dashboard JSON from the Celery mixin or import pre-built dashboards by ID. Covers panels, template variables, and customization options."
+---
+
+The Celery mixin ships two Grafana dashboards: one focused on per-task metrics and one providing a high-level queue and worker overview. You can import them directly into Grafana using their Grafana.com IDs, or generate customized JSON files from the mixin Jsonnet source.
+
+## Pre-built dashboards on Grafana.com
+
+Both dashboards are published on Grafana.com and can be imported by ID without building the mixin locally.
+
+<CardGroup cols={2}>
+  <Card title="Celery Tasks by Task" icon="chart-bar" href="https://grafana.com/grafana/dashboards/17508">
+    Dashboard ID **17508**. Per-task throughput, failure rate, and runtime histograms. Use this to identify which tasks are slow or failing.
+  </Card>
+  <Card title="Celery Tasks Overview" icon="chart-line" href="https://grafana.com/grafana/dashboards/17509">
+    Dashboard ID **17509**. Aggregate queue depths, worker counts, and overall task throughput. Use this as your top-level health view.
+  </Card>
+</CardGroup>
+
+## Importing by Grafana ID
+
+Importing by ID is the fastest method and does not require the mixin toolchain.
+
+<Steps>
+
+<Step title="Open the import dialog">
+
+In your Grafana instance, navigate to **Dashboards → New → Import**.
+
+</Step>
+
+<Step title="Enter the dashboard ID">
+
+In the **Import via grafana.com** field, enter the dashboard ID and click **Load**:
+
+<CodeGroup>
+
+```text Celery Tasks by Task
+17508
+```
+
+```text Celery Tasks Overview
+17509
+```
+
+</CodeGroup>
+
+Grafana fetches the dashboard JSON from Grafana.com automatically.
+
+</Step>
+
+<Step title="Select your Prometheus data source">
+
+On the import confirmation screen, select the Prometheus data source scraping your Celery Exporter instance, then click **Import**.
+
+</Step>
+
+</Steps>
+
+## Generating dashboards from the mixin
+
+If you need to customize panel queries, change thresholds, adjust variables, or adapt the dashboards to your environment, generate them locally from the Jsonnet source.
+
+Complete the [mixin setup steps](/mixin/introduction) first, then run:
+
+```bash
+make dashboards_out
+```
+
+This compiles the dashboard Jsonnet sources and writes one JSON file per dashboard into the `dashboards_out/` directory:
+
+```
+dashboards_out/
+├── celery-tasks-by-task.json
+└── celery-tasks-overview.json
+```
+
+Import each file into Grafana via **Dashboards → New → Import → Upload JSON file**.
+
+<Tip>
+The `dashboards_out/` directory is not committed to the repository. Regenerate it whenever you change `config.libsonnet` or the dashboard Jsonnet sources.
+</Tip>
+
+## Dashboard details
+
+### Celery Tasks by Task (ID 17508)
+
+This dashboard is focused on individual task names. Use it to debug a specific task type or compare performance across tasks.
+
+**Panels included:**
+
+| Panel | Metrics used | What it shows |
+|---|---|---|
+| Task throughput | `celery_task_succeeded_total`, `celery_task_failed_total` | Completions and failures per second per task name |
+| Failure rate | `celery_task_failed_total`, `celery_task_succeeded_total` | Percentage of tasks that failed, grouped by task name |
+| Runtime histogram | `celery_task_runtime_bucket` | Distribution of task execution times as a heatmap |
+| Retry rate | `celery_task_retried_total` | Rate of task retries per task name |
+
+### Celery Tasks Overview (ID 17509)
+
+This dashboard provides a high-level operational view. Use it as a first stop during incident investigation or routine health checks.
+
+**Panels included:**
+
+| Panel | Metrics used | What it shows |
+|---|---|---|
+| Queue depth | `celery_queue_length` | Number of tasks waiting per queue |
+| Worker count | `celery_worker_up`, `celery_active_worker_count` | How many workers are alive per queue |
+| Active process count | `celery_active_process_count` | Total worker concurrency per queue |
+| Overall throughput | `celery_task_succeeded_total`, `celery_task_failed_total` | Aggregate completion and failure rates across all tasks |
+
+## Dashboard variables
+
+Both dashboards expose template variables in the top toolbar for filtering panels.
+
+| Variable | Applies to | Description |
+|---|---|---|
+| `job` | Both dashboards | Filters by the Prometheus `job` label. Set this to the `job_name` from your scrape config (e.g., `celery`). |
+| `queue_name` | Both dashboards | Filters all panels to a specific broker queue (e.g., `default`, `priority`, `emails`). |
+| `task` | Tasks by Task only | Filters task-level panels to a specific task name. |
+
+<Tip>
+The `job` variable must match the `job_name` in your `prometheus.yml` scrape config. Mismatched job names result in empty panels across both dashboards.
+</Tip>
+
+## Customizing dashboards
+
+Dashboard configuration is controlled by `config.libsonnet`. The following fields affect dashboard behavior:
+
+```jsonnet config.libsonnet
+{
+  _config+:: {
+    // Default Prometheus data source name used in dashboards.
+    datasourceName: 'default',
+
+    // Show a cluster selector dropdown in dashboards.
+    showMultiCluster: false,
+    clusterLabel: 'cluster',
+
+    // Base URL for annotation dashboard links.
+    grafanaUrl: 'https://grafana.com',
+
+    // Task and queue names to exclude from selectors.
+    celeryIgnoredTasks: 'None',
+    celeryIgnoredQueues: 'None',
+
+    // Dashboard tags applied in Grafana.
+    tags: ['celery', 'celery-mixin'],
+
+    // Optional custom annotations to display on graphs.
+    annotation: {
+      enabled: false,
+      name: 'Custom Annotation',
+      tags: [],
+      datasource: '-- Grafana --',
+      iconColor: 'blue',
+      type: 'tags',
+    },
+  },
+}
+```
+
+After editing `config.libsonnet`, regenerate the dashboards:
+
+```bash
+make dashboards_out
+```
+
+<Warning>
+`celery_task_runtime_bucket` only populates after at least one task has completed successfully. The runtime heatmap panel will be empty until the first successful task is recorded.
+</Warning>
+
+## Related pages
+
+- [Mixin introduction](/mixin/introduction) — prerequisites and setup steps for building the mixin.
+- [Mixin alerts](/mixin/alerts) — generating and customizing Prometheus alert rules.
+- [Grafana dashboards reference](/monitoring/grafana-dashboards) — importing and using the dashboards without the mixin context.

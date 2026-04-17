@@ -1,0 +1,103 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Celery Exporter",
+  "projectDescription": "A Prometheus exporter that exposes real-time Celery task and worker metrics for monitoring with Prometheus and Grafana.",
+  "theme": "aspen",
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/kubernetes",
+              "deployment/binary"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/cli-options",
+              "configuration/environment-variables",
+              "configuration/broker-options"
+            ]
+          },
+          {
+            "group": "Monitoring",
+            "pages": [
+              "monitoring/metrics-reference",
+              "monitoring/grafana-dashboards",
+              "monitoring/prometheus-alerts"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/celery-setup",
+              "guides/redis",
+              "guides/rabbitmq",
+              "guides/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Celery Mixin",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "mixin/introduction",
+              "mixin/alerts",
+              "mixin/dashboards"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time Celery task event monitoring via built-in Celery monitoring API",
+    "Tracks task lifecycle states: sent, received, started, succeeded, failed, rejected, revoked, retried",
+    "Worker health monitoring with heartbeat tracking and configurable timeouts",
+    "Queue length and consumer metrics for Redis and RabbitMQ",
+    "Deployable as Docker image, standalone binary, or PyPI package",
+    "Kubernetes Helm chart for easy cluster deployment",
+    "Grafana dashboards and Prometheus alerting rules via Celery-mixin",
+    "Configurable metric prefixes and static labels for multi-tenant environments",
+    "Health check endpoint at /health for liveness probes",
+    "SSL/TLS support for broker connections"
+  ],
+  "publicApiSurface": [
+    "--broker-url (required): Broker connection URL (Redis/RabbitMQ)",
+    "--broker-transport-option: Key=value transport options",
+    "--broker-ssl-option: SSL/TLS certificate options",
+    "--accept-content: Celery serialization formats",
+    "--retry-interval: Reconnect delay on broker failure",
+    "--host / --port: HTTP server bind address (default 0.0.0.0:9808)",
+    "--buckets: Custom histogram bucket boundaries",
+    "--log-level: Logging verbosity",
+    "--worker-timeout: Seconds before considering a worker offline",
+    "--purge-offline-worker-metrics: Seconds before removing offline worker label series",
+    "--generic-hostname-task-sent-metric: Use generic hostname for task-sent metric",
+    "--queues (-Q): Comma-separated list of queues to pre-populate",
+    "--metric-prefix: Replace default 'celery_' metric prefix",
+    "--default-queue-name: Default queue name when not present in task",
+    "--static-label: Add static key=value labels to all metrics",
+    "GET /metrics: Prometheus metrics endpoint",
+    "GET /health: Broker connectivity health check",
+    "CE_* environment variable prefix for all CLI options"
+  ]
+}

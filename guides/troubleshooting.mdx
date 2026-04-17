@@ -1,0 +1,196 @@
+---
+title: "Troubleshooting Common Celery Exporter Setup Problems"
+description: "Diagnose and fix common Celery Exporter issues: missing metrics, worker status errors, high cardinality, broker disconnects, and queue visibility problems."
+---
+
+Most issues with Celery Exporter fall into one of three categories: Celery events are not enabled, the exporter is not connected to the broker, or metrics are present but have unexpected label values. This page covers the most common problems and how to resolve them.
+
+<AccordionGroup>
+
+<Accordion title="No metrics appearing at /metrics">
+
+**Symptom:** The `/metrics` endpoint returns only the Go runtime and process metrics, but no `celery_*` metrics are present.
+
+**Cause:** Celery workers are not emitting task events. The exporter connects to the broker but receives nothing to count.
+
+**Fix:** Enable events in your Celery workers. The quickest way is to send a control message to all connected workers:
+
+```bash
+celery -A <myproject> control enable_events
+```
+
+For a permanent fix, add the following to your Celery configuration so events are always enabled on startup:
+
+```python
+# celeryconfig.py
+worker_send_task_events = True
+```
+
+See [Configure Celery to send events](/guides/celery-setup) for full instructions.
+
+</Accordion>
+
+<Accordion title="celery_task_sent_total is missing">
+
+**Symptom:** All other task counters are present but `celery_task_sent_total` never appears.
+
+**Cause:** The `task-sent` event requires a separate configuration setting that the `celery control enable_events` command does not enable. This event is emitted by the task producer (the web server or other process calling `.delay()` or `.apply_async()`), not by the worker.
+
+**Fix:** Set `task_send_sent_event = True` in your Celery configuration on the **producer** side (not just the worker):
+
+```python
+# celeryconfig.py
+task_send_sent_event = True
+```
+
+In Django:
+
+```python
+# settings.py
+CELERY_TASK_SEND_SENT_EVENT = True
+```
+
+Restart the process that publishes tasks after making this change.
+
+</Accordion>
+
+<Accordion title="Worker shows as down (celery_worker_up = 0)">
+
+**Symptom:** `celery_worker_up` is `0` for a worker you know is running, or a worker is being marked as down too quickly.
+
+**Cause:** The exporter marks a worker as down if it has not received a heartbeat from that worker within the `--worker-timeout` period. The default is 300 seconds (5 minutes). If heartbeats are delayed (for example, due to a busy broker or high worker load), the worker may be marked down prematurely.
+
+**Fix:** Increase the worker timeout to allow more time between heartbeats:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0 \
+  --worker-timeout=600
+```
+
+Set `--worker-timeout=0` to disable the timeout entirely, so workers are only marked down when a `worker-offline` event is received.
+
+</Accordion>
+
+<Accordion title="High label cardinality from task-sent">
+
+**Symptom:** Prometheus memory usage is high, or you see many unique `hostname` values in `celery_task_sent_total` corresponding to ephemeral producers such as auto-scaled web servers.
+
+**Cause:** The `task-sent` event includes the hostname of the process that published the task. In Kubernetes or auto-scaling environments, each pod or instance has a unique hostname, creating a new label combination in Prometheus for every producer.
+
+**Fix:** Use the `--generic-hostname-task-sent-metric` flag to replace all producer hostnames with the literal string `generic`:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0 \
+  --generic-hostname-task-sent-metric
+```
+
+This collapses all `celery_task_sent_total` series to a single hostname value, dramatically reducing cardinality.
+
+</Accordion>
+
+<Accordion title="Exporter crashes on broker disconnect">
+
+**Symptom:** The exporter process exits when the broker becomes temporarily unavailable, requiring a manual restart or a container restart policy.
+
+**Cause:** By default, `--retry-interval` is `0`, which means the exporter raises an exception and exits on any broker error rather than attempting to reconnect.
+
+**Fix:** Set `--retry-interval` to the number of seconds the exporter should wait before retrying the connection:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0 \
+  --retry-interval=5
+```
+
+With this setting, the exporter waits 5 seconds after a broker error and then attempts to reconnect, rather than exiting.
+
+</Accordion>
+
+<Accordion title="Queue metrics not showing for a queue">
+
+**Symptom:** `celery_queue_length` is missing for a queue you expect to see, even though tasks are being published to it.
+
+**Cause:** The exporter discovers queues by inspecting the active queues reported by connected workers. If no worker has subscribed to a queue since the exporter started, that queue is not in the exporter's cache and will not appear in metrics.
+
+**Fix:** Pre-populate the queue list at startup using the `-Q` flag:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0 \
+  -Q celery,priority,emails
+```
+
+This tells the exporter to track those queue names from the start, regardless of whether a worker has been seen subscribing to them.
+
+</Accordion>
+
+<Accordion title="celery_active_consumer_count is always 0">
+
+**Symptom:** `celery_active_consumer_count` is present in `/metrics` but always shows `0`, even with workers running.
+
+**Cause:** This metric is only available for RabbitMQ (AMQP/AMQPS) and Qpid brokers. Redis does not expose per-queue consumer counts via its list data structure, so the exporter always returns `0` for Redis brokers.
+
+**Fix:** If you require consumer count metrics, switch to a RabbitMQ broker. If you are using RabbitMQ and still seeing `0`, verify that the AMQP connection is healthy and that workers are actively subscribed to the queues in question.
+
+See [Using RabbitMQ as the Celery Exporter broker](/guides/rabbitmq) for setup instructions.
+
+</Accordion>
+
+<Accordion title="Metrics accumulating for dead workers">
+
+**Symptom:** `celery_worker_up` and `celery_worker_tasks_active` retain stale label series for workers that no longer exist, increasing Prometheus cardinality over time.
+
+**Cause:** By default, the exporter sets `celery_worker_up` to `0` when a worker times out, but it does not remove the metric series entirely. The labels for the dead worker remain in Prometheus memory.
+
+**Fix:** Use `--purge-offline-worker-metrics` to set the number of seconds after which metrics for a dead worker are removed entirely from the registry. The default is 600 seconds (10 minutes).
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0 \
+  --purge-offline-worker-metrics=300
+```
+
+Set to `0` to disable purging if you want to retain metrics for dead workers indefinitely.
+
+</Accordion>
+
+</AccordionGroup>
+
+## Checking the /health endpoint
+
+The exporter exposes a health endpoint at `/health` on the same port as `/metrics` (default: 9808). It actively verifies the broker connection (up to three retries) and returns HTTP `200` if the broker is reachable, or HTTP `500` if not. Use it for Kubernetes liveness probes or load balancer health checks:
+
+```bash
+curl -f http://localhost:9808/health
+```
+
+A successful response looks like:
+
+```text
+Connected to the broker redis://redis:6379/0
+```
+
+<Note>
+The `/health` endpoint confirms both that the exporter is running and that it can reach the broker. However, a healthy `/health` response does not guarantee that Celery events are flowing — events require Celery workers to have events enabled (see [Configure Celery to send events](/guides/celery-setup)).
+</Note>
+
+## Enabling debug logging
+
+To see detailed output about each event received, each metric incremented, and broker connection activity, start the exporter with `--log-level=DEBUG`:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0 \
+  --log-level=DEBUG
+```
+
+Debug logs include:
+
+- Each Celery event type and the task name it applies to
+- Each counter or gauge update with its label values
+- Worker heartbeat timestamps and timeout checks
+- Queue length results per queue on each scrape
+
+This output is verbose in production but is the fastest way to confirm whether events are reaching the exporter at all.

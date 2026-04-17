@@ -1,0 +1,249 @@
+---
+title: "Generating Custom Prometheus Alerts with Celery Mixin"
+description: "Generate and customize Prometheus alert rules from the Celery mixin. Covers all three alerts, configurable thresholds, and Kubernetes deployment."
+---
+
+The Celery mixin generates a `prometheus_alerts.yaml` file from Jsonnet source. The file contains three alert rules covering the most critical Celery failure conditions. You can customize alert thresholds by editing the mixin configuration before generating the output, rather than modifying the generated YAML by hand.
+
+## Alert rules
+
+The mixin produces three alert rules in the `celery` group.
+
+### CeleryTaskHighFailRate
+
+Fires when more than 5% of tasks for a given job, queue, and task name have failed over the past 10 minutes, and the condition has been true for at least 1 minute.
+
+**Severity:** `warning`
+
+```promql
+sum(
+  increase(
+    celery_task_failed_total{
+      job=~".*celery.*",
+      queue_name!~"None",
+      name!~"None"
+    }[10m]
+  )
+) by (job, namespace, queue_name, name)
+/
+(
+  sum(
+    increase(
+      celery_task_failed_total{
+        job=~".*celery.*",
+        queue_name!~"None",
+        name!~"None"
+      }[10m]
+    )
+  ) by (job, namespace, queue_name, name)
+  +
+  sum(
+    increase(
+      celery_task_succeeded_total{
+        job=~".*celery.*",
+        queue_name!~"None",
+        name!~"None"
+      }[10m]
+    )
+  ) by (job, namespace, queue_name, name)
+)
+* 100 > 5
+```
+
+When this alert fires, the annotation `dashboard_url` links directly to the **Celery Tasks by Task** dashboard filtered to the affected job, queue, and task name.
+
+### CeleryHighQueueLength
+
+Fires when any queue has more than 100 messages waiting and has remained above that threshold for 20 consecutive minutes.
+
+**Severity:** `warning`
+
+```promql
+sum(
+  celery_queue_length{
+    job=~".*celery.*",
+    queue_name!~"None"
+  }
+) by (job, namespace, queue_name)
+> 100
+```
+
+When this alert fires, the annotation `dashboard_url` links to the **Celery Tasks Overview** dashboard filtered to the affected job and queue.
+
+### CeleryWorkerDown
+
+Fires when `celery_worker_up` equals `0` for any worker for 15 consecutive minutes.
+
+**Severity:** `warning`
+
+```promql
+celery_worker_up{job=~".*celery.*"} == 0
+```
+
+<Note>
+If you use autoscaling workers that are expected to come and go, you can disable this alert. Set `celeryWorkerDownAlertEnabled: false` in `config.libsonnet` before generating.
+</Note>
+
+## The Jsonnet source
+
+The entry point for alert generation is `alerts.jsonnet`, which renders the `prometheusAlerts` field from the mixin:
+
+```jsonnet alerts.jsonnet
+std.manifestYamlDoc((import 'mixin.libsonnet').prometheusAlerts)
+```
+
+The mixin itself is assembled in `mixin.libsonnet`:
+
+```jsonnet mixin.libsonnet
+(import 'alerts/alerts.libsonnet') +
+(import 'rules/rules.libsonnet') +
+(import 'dashboards/dashboards.libsonnet') +
+(import 'config.libsonnet')
+```
+
+All configurable values live in `config.libsonnet`. Override them there to change thresholds, intervals, or which alerts are enabled before running `make`.
+
+## Generating the alerts file
+
+Run the following command from the `celery-mixin/` directory after completing the [setup steps](/mixin/introduction):
+
+```bash
+make prometheus-alerts.yaml
+```
+
+This compiles `alerts.jsonnet` and writes the result to `prometheus_alerts.yaml` in the same directory.
+
+## Customizing thresholds
+
+Edit `config.libsonnet` to override any of the default values before generating:
+
+```jsonnet config.libsonnet
+{
+  _config+:: {
+    // Selectors are inserted between {} in Prometheus queries.
+    celerySelector: 'job=~".*celery.*"',
+
+    // Disable alerts for autoscaling environments.
+    celeryWorkerDownAlertEnabled: true,
+    celeryCeleryHighQueueLengthAlertEnabled: true,
+
+    // CeleryTaskHighFailRate thresholds
+    celeryTaskFailedInterval: '10m',
+    celeryTaskFailedThreshold: '5',  // percent
+
+    // CeleryHighQueueLength thresholds
+    celeryHighQueueLengthInterval: '20m',
+    celeryHighQueueLengthThreshold: '100',
+
+    // CeleryWorkerDown threshold
+    celeryWorkerDownInterval: '15m',
+  },
+}
+```
+
+| Config key | Default | Alert affected |
+|---|---|---|
+| `celeryTaskFailedThreshold` | `5` (percent) | `CeleryTaskHighFailRate` |
+| `celeryTaskFailedInterval` | `10m` | `CeleryTaskHighFailRate` |
+| `celeryHighQueueLengthThreshold` | `100` (messages) | `CeleryHighQueueLength` |
+| `celeryHighQueueLengthInterval` | `20m` | `CeleryHighQueueLength` |
+| `celeryWorkerDownInterval` | `15m` | `CeleryWorkerDown` |
+| `celeryWorkerDownAlertEnabled` | `true` | `CeleryWorkerDown` |
+| `celeryCeleryHighQueueLengthAlertEnabled` | `true` | `CeleryHighQueueLength` |
+
+After editing `config.libsonnet`, regenerate the file:
+
+```bash
+make prometheus-alerts.yaml
+```
+
+## Generated output
+
+The generated `prometheus_alerts.yaml` follows standard Prometheus alerting rule format:
+
+```yaml prometheus_alerts.yaml
+"groups":
+- "name": "celery"
+  "rules":
+  - "alert": "CeleryTaskHighFailRate"
+    "annotations":
+      "dashboard_url": "https://grafana.com/d/celery-tasks-by-task-32s3/celery-tasks-by-task?var-job={{ $labels.job }}&var-queue_name={{ $labels.queue_name }}&var-task={{ $labels.name }}"
+      "description": "More than 5% tasks failed for the task {{ $labels.job }}/{{ $labels.queue_name }}/{{ $labels.name }} the past 10m."
+      "summary": "Celery high task fail rate."
+    "for": "1m"
+    "labels":
+      "severity": "warning"
+  - "alert": "CeleryHighQueueLength"
+    ...
+  - "alert": "CeleryWorkerDown"
+    ...
+```
+
+## Deploying the alerts
+
+<CodeGroup>
+
+```yaml prometheus.yml
+global:
+  scrape_interval: 15s
+
+rule_files:
+  - "prometheus_alerts.yaml"
+
+scrape_configs:
+  - job_name: celery
+    static_configs:
+      - targets: ["localhost:9808"]
+```
+
+```yaml kubernetes-prometheusrule.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: celery-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: celery
+      rules:
+        - alert: CeleryTaskHighFailRate
+          expr: |
+            sum(
+              increase(celery_task_failed_total{job=~".*celery.*",queue_name!~"None",name!~"None"}[10m])
+            ) by (job, namespace, queue_name, name)
+            /
+            (
+              sum(increase(celery_task_failed_total{job=~".*celery.*",queue_name!~"None",name!~"None"}[10m])) by (job, namespace, queue_name, name)
+              +
+              sum(increase(celery_task_succeeded_total{job=~".*celery.*",queue_name!~"None",name!~"None"}[10m])) by (job, namespace, queue_name, name)
+            ) * 100 > 5
+          for: 1m
+          labels:
+            severity: warning
+        - alert: CeleryHighQueueLength
+          expr: |
+            sum(celery_queue_length{job=~".*celery.*",queue_name!~"None"}) by (job, namespace, queue_name) > 100
+          for: 20m
+          labels:
+            severity: warning
+        - alert: CeleryWorkerDown
+          expr: celery_worker_up{job=~".*celery.*"} == 0
+          for: 15m
+          labels:
+            severity: warning
+```
+
+</CodeGroup>
+
+<Note>
+When using the Kubernetes `PrometheusRule` CRD, the labels on the resource must match the label selectors configured on your Prometheus Operator instance. A common selector is `role: alert-rules`.
+</Note>
+
+## Related pages
+
+- [Mixin introduction](/mixin/introduction) — prerequisites and setup steps.
+- [Mixin dashboards](/mixin/dashboards) — generating Grafana dashboard JSON from the mixin.
+- [Prometheus alerts reference](/monitoring/prometheus-alerts) — the complete alert rule reference without the mixin context.

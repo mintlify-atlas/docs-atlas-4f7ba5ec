@@ -1,97 +1,77 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Celery Exporter: Prometheus Metrics for Celery"
+description: "Export real-time Celery task and worker metrics to Prometheus. Monitor task throughput, failure rates, queue lengths, and worker health with Grafana dashboards."
 ---
 
-## Setting up
+Celery Exporter is a Prometheus exporter that wraps Celery's built-in real-time monitoring API to expose task lifecycle events, worker status, and queue metrics. It works with both Redis and RabbitMQ brokers and deploys as a Docker container, standalone binary, or Python package.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get Celery Exporter running against your broker in minutes
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Metrics Reference" icon="chart-bar" href="/monitoring/metrics-reference">
+    Explore all exported Prometheus metrics and their labels
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Deploy on Kubernetes" icon="cubes" href="/deployment/kubernetes">
+    Install with the official Helm chart and configure ServiceMonitor
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Grafana Dashboards" icon="chart-line" href="/monitoring/grafana-dashboards">
+    Import pre-built dashboards for task throughput and worker overview
   </Card>
-</Columns>
+  <Card title="Configuration Reference" icon="sliders" href="/configuration/cli-options">
+    Browse all CLI flags, environment variables, and broker transport options
+  </Card>
+  <Card title="Prometheus Alerts" icon="bell" href="/monitoring/prometheus-alerts">
+    Set up alerting for task failures, high queue lengths, and downed workers
+  </Card>
+</CardGroup>
 
-## Create beautiful pages
+## Why Celery Exporter?
 
-Everything you need to create world-class documentation.
+Existing Celery exporters either exposed incorrect metric values or failed to capture the full range of task lifecycle events. Celery Exporter hooks directly into Celery's native real-time event processing to deliver accurate, low-latency metrics without polling.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Real-time events" icon="bolt">
+    Captures task-sent, task-started, task-succeeded, task-failed, and more as they happen
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Redis & RabbitMQ" icon="database">
+    Full support for both brokers including queue length and consumer count metrics
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Grafana ready" icon="chart-bar">
+    Pre-built Grafana dashboards and Prometheus alert rules via the Celery mixin
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Kubernetes native" icon="cubes">
+    Official Helm chart with ServiceMonitor support for Prometheus Operator
   </Card>
-</Columns>
+</CardGroup>
 
-## Need inspiration?
+## Get started
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Enable Celery events">
+    Configure your Celery app to emit task and worker events to the broker.
+
+    ```python celeryconfig.py
+    worker_send_task_events = True
+    task_send_sent_event = True
+    ```
+  </Step>
+  <Step title="Run the exporter">
+    Start Celery Exporter pointing at your broker. The exporter listens on port `9808` by default.
+
+    ```bash
+    docker run -p 9808:9808 danihodovic/celery-exporter \
+      --broker-url=redis://redis:6379/0
+    ```
+  </Step>
+  <Step title="Scrape metrics">
+    Add Celery Exporter as a Prometheus scrape target and verify metrics are available.
+
+    ```bash
+    curl http://localhost:9808/metrics
+    ```
+  </Step>
+  <Step title="Import Grafana dashboards">
+    Import the pre-built dashboards from Grafana.com to visualize task throughput, failure rates, and worker health.
+  </Step>
+</Steps>

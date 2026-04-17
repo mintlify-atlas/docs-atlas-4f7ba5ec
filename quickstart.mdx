@@ -1,80 +1,180 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quickstart: Run Celery Exporter in Minutes"
+description: "Step-by-step guide to enable Celery events, run the exporter with Docker, verify metrics, and add it as a Prometheus scrape target."
 ---
 
-## Get started in three steps
-
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This quickstart walks you through the minimum steps to get Celery Exporter collecting metrics from your Celery application and serving them to Prometheus. By the end you will have a running exporter, a verified `/metrics` endpoint, and a working Prometheus scrape configuration.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+This guide uses Docker and a Redis broker for the examples. If you are using RabbitMQ or a different deployment method, see the [broker guides](/guides/rabbitmq) and [deployment docs](/deployment/docker) for broker-specific details.
 </Note>
+
+<Steps>
+
+<Step title="Enable Celery events">
+
+Celery workers do not emit task events by default. You must enable them so the exporter has data to collect.
+
+<Tabs>
+  <Tab title="CLI (one-off)">
+    Run this command against your running Celery application. It instructs all connected workers to start sending task events immediately, without a restart.
+
+    ```bash
+    celery -A <myproject> control enable_events
+    ```
+
+    <Warning>
+    The `task-sent` event is **not** enabled by the CLI command above. To capture `celery_task_sent_total` metrics, you must also set `task_send_sent_event = True` in your configuration.
+    </Warning>
+  </Tab>
+  <Tab title="Python config">
+    Add these two settings to your Celery configuration file. This is the recommended approach for permanent event collection.
+
+    <CodeGroup>
+
+    ```python celeryconfig.py
+    # Enable task and worker events
+    worker_send_task_events = True
+    task_send_sent_event = True
+    ```
+
+    ```python settings.py (Django)
+    # Django uses uppercase CELERY_ prefix
+    CELERY_WORKER_SEND_TASK_EVENTS = True
+    CELERY_TASK_SEND_SENT_EVENT = True
+    ```
+
+    </CodeGroup>
+  </Tab>
+</Tabs>
+
+</Step>
+
+<Step title="Run the exporter">
+
+Start Celery Exporter pointing at your broker. The exporter listens on port `9808` by default.
+
+<Tabs>
+  <Tab title="Docker">
+    ```bash
+    docker run -p 9808:9808 danihodovic/celery-exporter \
+      --broker-url=redis://redis:6379/0
+    ```
+
+    To pass the broker URL as an environment variable instead of a CLI flag, use the `CE_` prefix:
+
+    ```bash
+    docker run -p 9808:9808 \
+      -e CE_BROKER_URL=redis://redis:6379/0 \
+      danihodovic/celery-exporter
+    ```
+  </Tab>
+  <Tab title="Binary">
+    Download the pre-built binary from GitHub Releases and run it directly — no Python runtime required.
+
+    ```bash
+    curl -L https://github.com/danihodovic/celery-exporter/releases/download/latest/celery-exporter \
+      -o ./celery-exporter
+    chmod +x ./celery-exporter
+    ./celery-exporter --broker-url=redis://localhost:6379/0
+    ```
+  </Tab>
+  <Tab title="PyPI">
+    Install from PyPI and run the `celery-exporter` command:
+
+    ```bash
+    pip install prometheus-exporter-celery
+    celery-exporter --broker-url=redis://localhost:6379/0
+    ```
+  </Tab>
+</Tabs>
+
+You should see a log line similar to:
+
+```
+INFO | Started celery-exporter at host='0.0.0.0' on port='9808'
+```
+
+</Step>
+
+<Step title="Verify the /metrics endpoint">
+
+With the exporter running, confirm it is serving Prometheus metrics:
+
+```bash
+curl http://localhost:9808/metrics
+```
+
+You should see output that includes lines like:
+
+```text
+# HELP celery_task_sent_total Sent when a task message is published.
+# TYPE celery_task_sent_total counter
+celery_task_sent_total{hostname="...",name="...",queue_name="celery"} 0.0
+# HELP celery_worker_up Indicates if a worker has recently sent a heartbeat.
+# TYPE celery_worker_up gauge
+celery_worker_up{hostname="..."} 1.0
+```
+
+<Tip>
+If you see empty output or no worker metrics yet, make sure at least one Celery worker is running with events enabled and has connected to the broker. Worker metrics appear after the first heartbeat, which is sent every two seconds by default.
+</Tip>
+
+</Step>
+
+<Step title="Check the health endpoint">
+
+The `/health` endpoint verifies the exporter can reach the broker. Use it as a liveness probe or to quickly confirm connectivity:
+
+```bash
+curl http://localhost:9808/health
+```
+
+A successful response looks like:
+
+```text
+Connected to the broker redis://redis:6379/0
+```
+
+If the broker is unreachable, the endpoint returns HTTP `500` with an error message. This makes it suitable for Kubernetes liveness and readiness probes.
+
+</Step>
+
+<Step title="Add to Prometheus scrape config">
+
+Add Celery Exporter as a static scrape target in your `prometheus.yml`:
+
+```yaml prometheus.yml
+scrape_configs:
+  - job_name: celery
+    static_configs:
+      - targets:
+          - localhost:9808
+```
+
+Reload or restart Prometheus after editing the configuration. You can verify the target is up by navigating to **Status → Targets** in the Prometheus UI and confirming the `celery` job shows state `UP`.
+
+<Note>
+If you are running in Kubernetes with the Prometheus Operator, use a `ServiceMonitor` resource instead of editing `prometheus.yml` directly. See the [Kubernetes deployment guide](/deployment/kubernetes) for a complete example.
+</Note>
+
+</Step>
+
+</Steps>
+
+## What's next?
+
+<CardGroup cols={2}>
+  <Card title="Configuration reference" icon="sliders" href="/configuration/cli-options">
+    Explore all CLI flags: retry intervals, custom metric prefixes, worker timeouts, and more.
+  </Card>
+  <Card title="Grafana dashboards" icon="chart-line" href="/monitoring/grafana-dashboards">
+    Import pre-built dashboards for task throughput, failure rates, and worker overview.
+  </Card>
+  <Card title="Prometheus alerts" icon="bell" href="/monitoring/prometheus-alerts">
+    Set up alerts for task failures, high queue lengths, and downed workers.
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/guides/troubleshooting">
+    Fix common issues: missing metrics, broker connection errors, and high cardinality.
+  </Card>
+</CardGroup>

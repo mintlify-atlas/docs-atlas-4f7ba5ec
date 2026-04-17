@@ -1,0 +1,97 @@
+---
+title: "Using RabbitMQ as the Celery Exporter Message Broker"
+description: "Connect Celery Exporter to RabbitMQ using AMQP and AMQPS URL formats, with queue length metrics, active consumer counts, and TLS broker SSL options."
+---
+
+Celery Exporter supports RabbitMQ as a broker via the AMQP protocol. RabbitMQ provides richer queue introspection than Redis, including active consumer counts per queue, which makes it possible to detect queues with no active consumers independently of worker heartbeat data.
+
+## RabbitMQ URL formats
+
+Pass the broker URL to the exporter using `--broker-url`. The following formats are supported:
+
+| Format | Description |
+|---|---|
+| `amqp://user:password@host:port/vhost` | Standard unencrypted AMQP |
+| `amqps://user:password@host:port/vhost` | AMQP over TLS |
+
+```bash
+# Default guest credentials, default vhost
+--broker-url=amqp://guest:guest@localhost:5672//
+
+# Named vhost
+--broker-url=amqp://celery:celery@rabbitmq.internal:5672/celery
+
+# TLS
+--broker-url=amqps://celery:celery@rabbitmq.internal:5671/celery
+```
+
+## Basic usage with Docker
+
+Run the exporter connected to a RabbitMQ instance:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=amqp://guest:guest@rabbitmq:5672//
+```
+
+You can also supply the URL via the environment variable:
+
+```bash
+docker run -p 9808:9808 \
+  -e CE_BROKER_URL=amqp://guest:guest@rabbitmq:5672// \
+  danihodovic/celery-exporter
+```
+
+## Queue metrics available with RabbitMQ
+
+With a RabbitMQ broker, the exporter exposes two queue metrics that are not available with Redis:
+
+| Metric | Description |
+|---|---|
+| `celery_queue_length` | Number of messages currently in the queue |
+| `celery_active_consumer_count` | Number of active consumers subscribed to the queue |
+
+`celery_active_consumer_count` is specific to RabbitMQ and Qpid brokers. It always returns `0` for Redis because Redis does not expose per-queue consumer counts via the list data structure Celery uses.
+
+Both metrics are updated on every Prometheus scrape by inspecting the broker directly.
+
+## How consumer count is retrieved
+
+On each scrape, the exporter calls `queue_declare` with `passive=True` on the AMQP channel for each known queue. A passive declare does not create the queue — it only reads its current state. The response includes both `message_count` and `consumer_count`, which are used to populate `celery_queue_length` and `celery_active_consumer_count` respectively.
+
+```python
+# From exporter.py
+queue_info = connection.default_channel.queue_declare(queue=queue, passive=True)
+consumer_count = queue_info.consumer_count
+message_count = queue_info.message_count
+```
+
+If a queue does not exist at scrape time (for example, because no worker has connected to it yet), the exporter logs a debug message and skips that queue rather than raising an error.
+
+<Note>
+`celery_active_consumer_count` reflects the number of AMQP consumers, which corresponds to the number of worker processes subscribed to the queue. Each Celery worker process opens one consumer channel per queue it subscribes to.
+</Note>
+
+## TLS with amqps://
+
+Use the `amqps://` scheme for TLS connections. Pass SSL file paths and options with `--broker-ssl-option`:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=amqps://celery:celery@rabbitmq.internal:5671/celery \
+  --broker-ssl-option certfile=/var/ssl/client.pem \
+  --broker-ssl-option keyfile=/var/ssl/client.key \
+  --broker-ssl-option ca_certs=/var/ssl/ca.pem \
+  --broker-ssl-option cert_reqs=2
+```
+
+| SSL option | Description |
+|---|---|
+| `certfile` | Path to the client certificate file |
+| `keyfile` | Path to the client private key file |
+| `ca_certs` | Path to the CA certificate bundle |
+| `cert_reqs` | Certificate verification: `0` = none, `1` = optional, `2` = required |
+
+<Tip>
+Mount your certificate files into the container using `-v /path/to/certs:/var/ssl` and reference them by the container path in `--broker-ssl-option`.
+</Tip>

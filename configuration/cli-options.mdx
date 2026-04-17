@@ -1,0 +1,220 @@
+---
+title: "Celery Exporter CLI Flags: Complete Reference"
+description: "Complete reference for all Celery Exporter CLI flags, including defaults, types, and examples for broker, worker, queue, and metric configuration."
+---
+
+Celery Exporter is configured entirely through command-line flags. This page documents every available option, its type, default value, and a usage example. All flags can also be set via environment variables using the `CE_` prefix — see [Environment variables](/configuration/environment-variables) for details.
+
+## Required options
+
+<ParamField path="--broker-url" type="string" required>
+  The connection URL for your Celery broker. Supports Redis, RabbitMQ, and Redis Sentinel URL schemes.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0
+  celery-exporter --broker-url=amqp://user:pass@rabbitmq:5672/
+  celery-exporter --broker-url=sentinel://sentinel:26379/0
+  ```
+</ParamField>
+
+## Server options
+
+<ParamField path="--host" type="string" default="0.0.0.0">
+  The host address the exporter HTTP server listens on. Set to `127.0.0.1` to restrict access to the local machine only.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --host=127.0.0.1
+  ```
+</ParamField>
+
+<ParamField path="--port" type="integer" default="9808">
+  The port the exporter HTTP server listens on. The `/metrics` and `/health` endpoints are served on this port.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --port=9090
+  ```
+</ParamField>
+
+## Broker options
+
+<ParamField path="--broker-transport-option" type="string" default="none">
+  A Kombu broker transport option in `key=value` format. Repeat the flag to pass multiple options. Values that are numeric strings are automatically converted to integers; values that are valid JSON strings are decoded into dicts.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 \
+    --broker-transport-option visibility_timeout=7200 \
+    --broker-transport-option global_keyprefix=myapp
+  ```
+
+  For nested options such as `sentinel_kwargs`, pass a JSON string:
+
+  ```bash
+  celery-exporter --broker-url=sentinel://sentinel:26379/0 \
+    --broker-transport-option master_name=my_master \
+    --broker-transport-option sentinel_kwargs="{\"password\": \"sentinelpass\"}"
+  ```
+
+  See [Broker options](/configuration/broker-options) for the full list of transport options.
+</ParamField>
+
+<ParamField path="--broker-ssl-option" type="string" default="none">
+  A TLS/SSL option in `key=value` format. Repeat the flag to pass multiple options. Numeric values (such as SSL verification integer constants) are automatically converted to integers.
+
+  ```bash
+  celery-exporter --broker-url=amqps://rabbitmq:5671/ \
+    --broker-ssl-option certfile=/path/to/client.pem \
+    --broker-ssl-option keyfile=/path/to/client.key \
+    --broker-ssl-option ca_certs=/path/to/ca.pem
+  ```
+</ParamField>
+
+<ParamField path="--accept-content" type="string" default="none">
+  A comma-separated list of content types the Celery application accepts. Passed directly to Celery's `accept_content` configuration. Required when your tasks use serializers other than `json`.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --accept-content=json,pickle
+  ```
+</ParamField>
+
+<ParamField path="--retry-interval" type="integer" default="0">
+  Number of seconds to wait before reconnecting after a broker communication error. When set to `0` (the default), the exporter raises an exception and exits on any broker error rather than retrying.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --retry-interval=5
+  ```
+</ParamField>
+
+## Worker options
+
+<ParamField path="--worker-timeout" type="integer" default="300">
+  Seconds of silence before a worker is considered offline. If no heartbeat has been received from a worker within this window, the exporter sets `celery_worker_up` to `0` for that worker. Set to `0` to disable timeout tracking entirely (workers are never marked offline).
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --worker-timeout=120
+  ```
+</ParamField>
+
+<ParamField path="--purge-offline-worker-metrics" type="integer" default="600">
+  Seconds after the last heartbeat before all metric label series for a dead worker are removed from memory. Purging keeps metric cardinality low by removing label combinations that no longer exist. Set to `0` to retain offline worker metrics indefinitely.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --purge-offline-worker-metrics=1800
+  ```
+
+  <Note>
+  `--purge-offline-worker-metrics` should be greater than `--worker-timeout`. A worker is first marked offline at `worker-timeout` seconds, and then its metric series are deleted at `purge-offline-worker-metrics` seconds.
+  </Note>
+</ParamField>
+
+<ParamField path="--generic-hostname-task-sent-metric" type="boolean" default="false">
+  Boolean flag (no value required). When set, the `hostname` label on `celery_task_sent_total` is replaced with the literal string `generic` instead of the originating client's hostname.
+
+  This reduces label cardinality in environments such as Kubernetes where task producers have ephemeral, randomly-generated hostnames that change with every pod restart.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --generic-hostname-task-sent-metric
+  ```
+</ParamField>
+
+## Queue options
+
+<ParamField path="-Q / --queues" type="string" default="none">
+  Short form: `-Q`. A comma-separated list of queue names to seed the exporter's queue cache. Queues listed here will appear in metrics immediately — even before any worker has been seen consuming from them. Without this option, a queue only appears in metrics after at least one worker has started consuming from it.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --queues=default,high-priority,low-priority
+  # Short form:
+  celery-exporter --broker-url=redis://localhost:6379/0 -Q default,high-priority
+  ```
+</ParamField>
+
+<ParamField path="--default-queue-name" type="string" default="celery">
+  The queue name to use as the `queue_name` label value when a task event does not include queue information. This matches Celery's own `task_default_queue` setting.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --default-queue-name=default
+  ```
+</ParamField>
+
+## Metric customization
+
+<ParamField path="--metric-prefix" type="string" default="celery_">
+  A string prefix applied to all metric names. The default produces names like `celery_task_sent_total`. Changing this replaces the `celery_` part, so `--metric-prefix=myapp_` produces `myapp_task_sent_total`.
+
+  <Warning>
+  Changing `--metric-prefix` renames all exported metrics. Existing Prometheus recording rules, alerts, and Grafana dashboards that reference the default `celery_` metric names will break unless updated.
+  </Warning>
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --metric-prefix=myapp_
+  ```
+</ParamField>
+
+<ParamField path="--static-label" type="string" default="none">
+  A static label in `key=value` format added to every metric. Repeat the flag for multiple labels. Useful for identifying the environment, region, or application when multiple Celery deployments export to the same Prometheus instance.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 \
+    --static-label env=production \
+    --static-label region=us-east-1
+  ```
+
+  This produces metrics with extra labels:
+
+  ```text
+  celery_worker_up{hostname="worker1",env="production",region="us-east-1"} 1.0
+  ```
+</ParamField>
+
+<ParamField path="--buckets" type="string" default="Prometheus DEFAULT_BUCKETS">
+  Comma-separated histogram bucket boundaries (in seconds) for the `celery_task_runtime` histogram. The default uses Prometheus client's built-in `DEFAULT_BUCKETS`: `.005, .01, .025, .05, .075, .1, .25, .5, .75, 1.0, 2.5, 5.0, 7.5, 10.0, +Inf`.
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 \
+    --buckets=0.1,0.5,1,5,10,30,60
+  ```
+</ParamField>
+
+## Logging
+
+<ParamField path="--log-level" type="string" default="INFO">
+  Logging verbosity level. Accepts standard Python log level names. Use `DEBUG` to see every event received from the broker, which is helpful when diagnosing missing metrics.
+
+  Accepted values: `TRACE`, `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`, `CRITICAL`
+
+  ```bash
+  celery-exporter --broker-url=redis://localhost:6379/0 --log-level=DEBUG
+  ```
+</ParamField>
+
+## Quick reference
+
+| Flag | Short | Default | Required |
+|------|-------|---------|----------|
+| `--broker-url` | — | — | Yes |
+| `--host` | — | `0.0.0.0` | No |
+| `--port` | — | `9808` | No |
+| `--broker-transport-option` | — | — | No |
+| `--broker-ssl-option` | — | — | No |
+| `--accept-content` | — | — | No |
+| `--retry-interval` | — | `0` | No |
+| `--worker-timeout` | — | `300` | No |
+| `--purge-offline-worker-metrics` | — | `600` | No |
+| `--generic-hostname-task-sent-metric` | — | `false` | No |
+| `--queues` | `-Q` | — | No |
+| `--default-queue-name` | — | `celery` | No |
+| `--metric-prefix` | — | `celery_` | No |
+| `--static-label` | — | — | No |
+| `--buckets` | — | Prometheus defaults | No |
+| `--log-level` | — | `INFO` | No |
+
+## What's next?
+
+<CardGroup cols={2}>
+  <Card title="Environment variables" icon="key" href="/configuration/environment-variables">
+    Set any CLI flag via a CE_ environment variable — useful for Docker and Kubernetes deployments.
+  </Card>
+  <Card title="Broker options" icon="database" href="/configuration/broker-options">
+    Deep-dive into transport options, SSL configuration, and Sentinel support.
+  </Card>
+</CardGroup>

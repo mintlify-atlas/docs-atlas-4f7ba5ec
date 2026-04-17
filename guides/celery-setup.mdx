@@ -1,0 +1,84 @@
+---
+title: "Configure Celery to Send Events to Celery Exporter"
+description: "Enable Celery worker and task events so Celery Exporter can collect metrics via the real-time Receiver API, including task-sent for producer-side tracking."
+---
+
+Celery Exporter works by listening to Celery's built-in real-time event stream. Before any metrics appear in Prometheus, you must configure your Celery workers and clients to emit those events. Without this step, the exporter connects to the broker successfully but receives no data.
+
+## Why events must be enabled
+
+Celery has a monitoring API based on an event bus. Workers publish events such as `task-started`, `task-succeeded`, and `task-failed` to the broker as tasks move through their lifecycle. The exporter runs a `celery.events.Receiver` that subscribes to this stream and increments Prometheus counters and gauges in response to each event.
+
+By default, Celery workers do not send task events. You must enable event publishing explicitly. There are two separate settings:
+
+| Setting | What it enables |
+|---|---|
+| `worker_send_task_events` | Workers emit `task-received`, `task-started`, `task-succeeded`, `task-failed`, `task-retried`, `task-revoked`, and `task-rejected` events |
+| `task_send_sent_event` | The Celery client (the process that publishes the task) emits a `task-sent` event when enqueuing a task |
+
+<Note>
+`task_send_sent_event` must be set in Celery configuration — it cannot be enabled via `celery control`. The `task-sent` event is emitted by the process that calls `.delay()` or `.apply_async()`, such as a web server or a scheduled job runner, not by the worker itself.
+</Note>
+
+## Enabling events
+
+<Tabs>
+  <Tab title="CLI command">
+
+Run the following command against your running Celery application. This sends a control message to all connected workers telling them to start emitting task events.
+
+```bash
+celery -A <myproject> control enable_events
+```
+
+Replace `<myproject>` with your Celery application module (the same value you pass to `celery worker -A`).
+
+This command enables `worker_send_task_events` at runtime without restarting workers. However, it does **not** enable `task_send_sent_event` — for that, you must set it in your Celery configuration.
+
+  </Tab>
+  <Tab title="celeryconfig.py">
+
+Add the following settings to your `celeryconfig.py`:
+
+```python celeryconfig.py
+worker_send_task_events = True
+task_send_sent_event = True
+```
+
+Workers pick up these settings on startup. If your workers are already running, restart them after updating the configuration.
+
+  </Tab>
+  <Tab title="Django settings.py">
+
+If you are using Celery with Django, add the uppercase equivalents to your `settings.py`:
+
+```python settings.py
+CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_TASK_SEND_SENT_EVENT = True
+```
+
+Restart your Celery workers after making this change.
+
+  </Tab>
+</Tabs>
+
+## What each event covers
+
+Once events are enabled, the exporter receives and records the following:
+
+| Event | Metric incremented | Emitted by |
+|---|---|---|
+| `task-sent` | `celery_task_sent_total` | Task producer (client) |
+| `task-received` | `celery_task_received_total` | Worker |
+| `task-started` | `celery_task_started_total` | Worker |
+| `task-succeeded` | `celery_task_succeeded_total` | Worker |
+| `task-failed` | `celery_task_failed_total` | Worker |
+| `task-retried` | `celery_task_retried_total` | Worker |
+| `task-revoked` | `celery_task_revoked_total` | Worker |
+| `task-rejected` | `celery_task_rejected_total` | Worker |
+
+The `task-sent` event is also used to populate `celery_task_sent_total` with the `hostname` label set to the producer's hostname. In environments with many ephemeral producers, use the `--generic-hostname-task-sent-metric` flag to avoid label cardinality issues — see the [metrics reference](/monitoring/metrics-reference) for details.
+
+<Tip>
+After enabling events and restarting workers, verify the exporter is receiving them by checking `curl http://localhost:9808/metrics` and confirming counters such as `celery_task_received_total` are present and incrementing.
+</Tip>

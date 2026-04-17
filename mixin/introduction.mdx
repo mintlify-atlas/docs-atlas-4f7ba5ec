@@ -1,0 +1,118 @@
+---
+title: "Celery Mixin: Grafana Dashboards and Prometheus Alerts"
+description: "The Celery mixin bundles Grafana dashboards and Prometheus alert rules as Jsonnet. Generate monitoring config files for any Prometheus and Grafana setup."
+---
+
+The Celery mixin is a [monitoring mixin](https://github.com/monitoring-mixins/docs) that packages Grafana dashboards and Prometheus alerting rules as Jsonnet source files. You compile the mixin locally to produce a `prometheus_alerts.yaml` file and a `dashboards_out/` directory of Grafana JSON files, which you then deploy to your own infrastructure.
+
+## What the mixin provides
+
+<CardGroup cols={2}>
+  <Card title="Prometheus alerts" icon="bell">
+    Three pre-built alert rules covering task failure rate, queue depth, and worker availability. Generate `prometheus_alerts.yaml` and load it directly into Prometheus.
+  </Card>
+  <Card title="Grafana dashboards" icon="chart-bar">
+    Two pre-built dashboards: per-task analysis and a high-level queue overview. Generate JSON files for Grafana import, or import them by ID from Grafana.com.
+  </Card>
+</CardGroup>
+
+## Deployment options
+
+The mixin README describes three ways to deploy the monitoring configuration. Choose the one that fits your infrastructure.
+
+<AccordionGroup>
+  <Accordion title="Option 1: Generate config files manually">
+    Compile the Jsonnet sources to produce a `prometheus_alerts.yaml` and dashboard JSON files. Apply the outputs to your existing Prometheus and Grafana instances. This is the most common approach and works with any deployment method.
+  </Accordion>
+  <Accordion title="Option 2: Use Jsonnet with Prometheus and Grafana">
+    Vendor the mixin into your infrastructure-as-code repository using [jsonnet-bundler](https://github.com/jsonnet-bundler/jsonnet-bundler) and import it directly into your Jsonnet-based Prometheus and Grafana configuration.
+  </Accordion>
+  <Accordion title="Option 3: Use prometheus-operator">
+    Deploy the generated `prometheus_alerts.yaml` as a Kubernetes `PrometheusRule` CRD. The prometheus-operator picks up the rules automatically when the resource labels match its selector configuration.
+  </Accordion>
+</AccordionGroup>
+
+## Prerequisites
+
+Before generating config files, install the following tools:
+
+- **[jsonnet-bundler (`jb`)](https://github.com/jsonnet-bundler/jsonnet-bundler)** — manages Jsonnet dependencies.
+- **[jsonnet](https://jsonnet.org/)** — the Jsonnet compiler used by the Makefile targets.
+
+```bash
+go install github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@latest
+brew install jsonnet
+```
+
+<Note>
+On Linux, install `jsonnet` via your package manager or download a release binary from the [jsonnet releases page](https://github.com/google/go-jsonnet/releases).
+</Note>
+
+## Quick setup
+
+<Steps>
+
+<Step title="Clone the repository">
+
+```bash
+git clone https://github.com/danihodovic/celery-exporter
+cd celery-exporter/celery-mixin
+```
+
+</Step>
+
+<Step title="Install Jsonnet dependencies">
+
+```bash
+jb install
+```
+
+This downloads the mixin's Jsonnet library dependencies into a `vendor/` directory.
+
+</Step>
+
+<Step title="Generate the Prometheus alerts file">
+
+```bash
+make prometheus-alerts.yaml
+```
+
+This compiles `alerts.jsonnet` using `mixin.libsonnet` and writes the output to `prometheus_alerts.yaml`.
+
+</Step>
+
+<Step title="Generate the Grafana dashboard files">
+
+```bash
+make dashboards_out
+```
+
+This compiles the dashboard Jsonnet sources and writes JSON files to the `dashboards_out/` directory.
+
+</Step>
+
+</Steps>
+
+## Outputs
+
+After running both `make` targets, you will have:
+
+| Output | Description |
+|--------|-------------|
+| `prometheus_alerts.yaml` | Alert rules file to load via `rule_files` in `prometheus.yml` or apply as a Kubernetes `PrometheusRule`. |
+| `dashboards_out/` | Directory of Grafana dashboard JSON files. Import each file via **Dashboards → New → Import → Upload JSON**. |
+
+<Tip>
+If you only need the default dashboards without customization, you can import them directly into Grafana using their IDs — no mixin build required. See [Grafana dashboards](/mixin/dashboards) for details.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alerts" icon="bell" href="/mixin/alerts">
+    Learn about the three generated alert rules and how to customize their thresholds using the Jsonnet config.
+  </Card>
+  <Card title="Dashboards" icon="chart-bar" href="/mixin/dashboards">
+    See the two pre-built Grafana dashboards, how to generate them from the mixin, and how to import them.
+  </Card>
+</CardGroup>

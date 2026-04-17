@@ -1,0 +1,321 @@
+---
+title: "Broker Transport and SSL Options for Celery Exporter"
+description: "Configure Redis, RabbitMQ, and Sentinel broker connections for Celery Exporter with transport options, SSL certificates, and serialization content types."
+---
+
+Celery Exporter connects to your broker using [Kombu](https://docs.celeryq.dev/projects/kombu/en/stable/), the messaging library underlying Celery. This page covers how to configure broker transport options, TLS/SSL, Redis Sentinel, and serialization content types. For basic broker URL syntax and a comparison of Redis vs RabbitMQ, see the tabs below.
+
+## Broker URL formats
+
+<Tabs>
+  <Tab title="Redis">
+    | Scheme | Description |
+    |--------|-------------|
+    | `redis://` | Unencrypted TCP connection |
+    | `rediss://` | TLS-encrypted TCP connection |
+    | `sentinel://` | Redis Sentinel for high availability |
+
+    ```text
+    redis://localhost:6379/0
+    redis://:password@redis.internal:6379/1
+    rediss://redis.internal:6380/0
+    sentinel://sentinel1:26379,sentinel2:26379/0
+    ```
+  </Tab>
+  <Tab title="RabbitMQ">
+    | Scheme | Description |
+    |--------|-------------|
+    | `amqp://` | Unencrypted AMQP connection |
+    | `amqps://` | TLS-encrypted AMQP connection |
+
+    ```text
+    amqp://guest:guest@localhost:5672/
+    amqp://user:password@rabbitmq.internal:5672/myvhost
+    amqps://user:password@rabbitmq.internal:5671/
+    ```
+  </Tab>
+</Tabs>
+
+## Broker transport options
+
+Transport options are passed directly to Kombu and control low-level broker behavior. Use `--broker-transport-option key=value` to set them. Repeat the flag for multiple options.
+
+```bash
+celery-exporter --broker-url=redis://localhost:6379/0 \
+  --broker-transport-option visibility_timeout=7200 \
+  --broker-transport-option global_keyprefix=myapp
+```
+
+**Value type conversion** — the exporter automatically converts values to the appropriate type before passing them to Kombu:
+
+- Numeric strings (e.g. `7200`) are converted to `int`
+- Valid JSON strings (e.g. `{"password": "secret"}`) are decoded to `dict`
+- All other strings are passed through as-is
+
+### Common Redis transport options
+
+<AccordionGroup>
+  <Accordion title="visibility_timeout">
+    Controls how long (in seconds) a message is invisible to other consumers after being received. If a worker crashes before acknowledging a task, the task becomes visible again after this timeout and is redelivered to another worker.
+
+    ```bash
+    --broker-transport-option visibility_timeout=7200
+    ```
+
+    The default Redis visibility timeout is 1 hour (3600 seconds). For long-running tasks, set this to a value longer than your maximum task runtime.
+  </Accordion>
+
+  <Accordion title="global_keyprefix">
+    A string prefix added to all Redis key names used by Kombu. Useful when multiple Celery deployments share the same Redis instance and need namespaced keys.
+
+    ```bash
+    --broker-transport-option global_keyprefix=myapp
+    ```
+  </Accordion>
+
+  <Accordion title="socket_timeout and socket_connect_timeout">
+    Control the timeout (in seconds) for socket read operations and connection establishment respectively.
+
+    ```bash
+    --broker-transport-option socket_timeout=30 \
+    --broker-transport-option socket_connect_timeout=10
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Redis Sentinel options
+
+Redis Sentinel provides automatic failover for Redis. Connect using the `sentinel://` URL scheme and pass Sentinel-specific transport options:
+
+```bash
+celery-exporter \
+  --broker-url=sentinel://sentinel1:26379,sentinel2:26379/0 \
+  --broker-transport-option master_name=my_master \
+  --broker-transport-option sentinel_kwargs="{\"password\": \"sentinelpass\"}"
+```
+
+<AccordionGroup>
+  <Accordion title="master_name">
+    The name of the Redis Sentinel master group to connect to. Required when using the `sentinel://` scheme.
+
+    ```bash
+    --broker-transport-option master_name=my_master
+    ```
+  </Accordion>
+
+  <Accordion title="sentinel_kwargs">
+    A JSON string of additional keyword arguments passed to the Sentinel connection. Use this to set a Sentinel password when your Sentinel instances require authentication.
+
+    ```bash
+    --broker-transport-option sentinel_kwargs="{\"password\": \"sentinelpass\"}"
+    ```
+
+    <Note>
+    The JSON string must be valid JSON. Escape inner double quotes with `\"` when passing from a shell.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+For the full list of available Redis transport options, refer to the [Kombu Redis transport reference](https://docs.celeryq.dev/projects/kombu/en/stable/reference/kombu.transport.redis.html).
+
+## SSL options
+
+Use `--broker-ssl-option key=value` to configure TLS when connecting to `rediss://` or `amqps://` brokers. Repeat the flag for each option. Numeric values are automatically converted to integers (needed for SSL constant values such as `cert_reqs`).
+
+```bash
+celery-exporter \
+  --broker-url=amqps://user:pass@rabbitmq:5671/ \
+  --broker-ssl-option certfile=/path/to/client.pem \
+  --broker-ssl-option keyfile=/path/to/client.key \
+  --broker-ssl-option ca_certs=/path/to/ca.pem
+```
+
+<Tabs>
+  <Tab title="Redis TLS">
+    ```bash
+    celery-exporter \
+      --broker-url=rediss://redis:6380/0 \
+      --broker-ssl-option certfile=/certs/client.pem \
+      --broker-ssl-option keyfile=/certs/client.key \
+      --broker-ssl-option ca_certs=/certs/ca.pem
+    ```
+  </Tab>
+  <Tab title="RabbitMQ TLS">
+    ```bash
+    celery-exporter \
+      --broker-url=amqps://user:pass@rabbitmq:5671/ \
+      --broker-ssl-option certfile=/certs/client.pem \
+      --broker-ssl-option keyfile=/certs/client.key \
+      --broker-ssl-option ca_certs=/certs/ca.pem
+    ```
+  </Tab>
+  <Tab title="Disable certificate verification">
+    ```bash
+    # ssl.CERT_NONE = 0
+    celery-exporter \
+      --broker-url=rediss://redis:6380/0 \
+      --broker-ssl-option cert_reqs=0
+    ```
+
+    <Warning>
+    Disabling certificate verification (`cert_reqs=0`) removes protection against man-in-the-middle attacks. Only use this in trusted internal networks or for local testing.
+    </Warning>
+  </Tab>
+</Tabs>
+
+### SSL option reference
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `certfile` | string | Path to the client certificate PEM file |
+| `keyfile` | string | Path to the private key PEM file |
+| `ca_certs` | string | Path to the CA certificate bundle PEM file |
+| `cert_reqs` | integer | SSL verification mode: `0` = none, `1` = optional, `2` = required |
+
+## Accept content
+
+The `--accept-content` flag configures which serialization formats Celery will accept from task messages. Pass a comma-separated list of content type names:
+
+```bash
+celery-exporter --broker-url=redis://localhost:6379/0 --accept-content=json,pickle
+```
+
+This is passed directly to Celery's `accept_content` configuration list. The value must match what your Celery workers and producers are configured to use.
+
+<Warning>
+The `pickle` serializer can execute arbitrary Python code during deserialization. Only enable it if all task producers are trusted and the broker is not publicly accessible.
+</Warning>
+
+## Common configuration examples
+
+<AccordionGroup>
+  <Accordion title="Redis with namespace prefix and long visibility timeout">
+    ```bash
+    celery-exporter \
+      --broker-url=redis://localhost:6379/0 \
+      --broker-transport-option global_keyprefix=myapp \
+      --broker-transport-option visibility_timeout=43200
+    ```
+  </Accordion>
+
+  <Accordion title="Redis Sentinel with password-protected sentinels">
+    ```bash
+    celery-exporter \
+      --broker-url=sentinel://sentinel1:26379,sentinel2:26379,sentinel3:26379/0 \
+      --broker-transport-option master_name=mymaster \
+      --broker-transport-option sentinel_kwargs="{\"password\": \"sentinelpass\"}"
+    ```
+  </Accordion>
+
+  <Accordion title="RabbitMQ with mutual TLS">
+    ```bash
+    celery-exporter \
+      --broker-url=amqps://user:pass@rabbitmq:5671/myvhost \
+      --broker-ssl-option certfile=/certs/client.pem \
+      --broker-ssl-option keyfile=/certs/client.key \
+      --broker-ssl-option ca_certs=/certs/ca.pem
+    ```
+  </Accordion>
+
+  <Accordion title="Redis with retry on connection errors">
+    ```bash
+    celery-exporter \
+      --broker-url=redis://redis:6379/0 \
+      --retry-interval=10 \
+      --broker-transport-option socket_timeout=30 \
+      --broker-transport-option socket_connect_timeout=10
+    ```
+  </Accordion>
+
+  <Accordion title="Redis with static labels for multi-tenant Prometheus">
+    ```bash
+    celery-exporter \
+      --broker-url=redis://redis:6379/0 \
+      --static-label env=production \
+      --static-label team=payments \
+      --broker-transport-option global_keyprefix=payments
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Docker Compose examples
+
+<CodeGroup>
+
+```yaml redis-compose.yml
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  celery-exporter:
+    image: danihodovic/celery-exporter
+    ports:
+      - "9808:9808"
+    command:
+      - --broker-url=redis://redis:6379/0
+      - --broker-transport-option=visibility_timeout=7200
+      - --broker-transport-option=global_keyprefix=myapp
+      - --retry-interval=5
+    depends_on:
+      - redis
+```
+
+```yaml rabbitmq-compose.yml
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+
+  celery-exporter:
+    image: danihodovic/celery-exporter
+    ports:
+      - "9808:9808"
+    environment:
+      CE_BROKER_URL: amqp://guest:guest@rabbitmq:5672/
+      CE_RETRY_INTERVAL: "5"
+    depends_on:
+      - rabbitmq
+```
+
+```yaml sentinel-compose.yml
+services:
+  redis:
+    image: redis:7
+
+  sentinel:
+    image: redis:7
+    command: redis-sentinel /etc/redis/sentinel.conf
+
+  celery-exporter:
+    image: danihodovic/celery-exporter
+    ports:
+      - "9808:9808"
+    command:
+      - --broker-url=sentinel://sentinel:26379/0
+      - --broker-transport-option=master_name=mymaster
+      - --retry-interval=5
+    depends_on:
+      - sentinel
+```
+
+</CodeGroup>
+
+## What's next?
+
+<CardGroup cols={2}>
+  <Card title="CLI options reference" icon="sliders" href="/configuration/cli-options">
+    Full documentation for every CLI flag with types, defaults, and examples.
+  </Card>
+  <Card title="Environment variables" icon="key" href="/configuration/environment-variables">
+    Use CE_ variables instead of CLI flags in Docker and Kubernetes deployments.
+  </Card>
+  <Card title="Redis guide" icon="database" href="/guides/redis">
+    End-to-end Redis setup with Celery Exporter, including Sentinel configuration.
+  </Card>
+  <Card title="RabbitMQ guide" icon="list-tree" href="/guides/rabbitmq">
+    Connect Celery Exporter to a RabbitMQ broker with TLS and vhost configuration.
+  </Card>
+</CardGroup>

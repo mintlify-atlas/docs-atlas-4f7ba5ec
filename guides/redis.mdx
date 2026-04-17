@@ -1,0 +1,132 @@
+---
+title: "Using Redis as Your Celery Exporter Message Broker"
+description: "Connect Celery Exporter to Redis using standard, TLS, and Sentinel URL formats, with queue length tracking via LLEN, transport options, and SSL setup."
+---
+
+Redis is the most common broker used with Celery Exporter. The exporter supports standard Redis, TLS-encrypted Redis (`rediss://`), and Redis Sentinel for high-availability setups. This page covers URL formats, Docker usage, how queue length is tracked, and the available transport options for tuning the connection.
+
+## Redis URL formats
+
+Pass the broker URL to the exporter using `--broker-url`. The following formats are supported:
+
+| Format | Description |
+|---|---|
+| `redis://host:port/db` | Standard unencrypted Redis |
+| `rediss://host:port/db` | Redis over TLS |
+| `sentinel://host:port/db` | Redis Sentinel (high-availability) |
+
+```bash
+# Standard Redis on default port, database 0
+--broker-url=redis://localhost:6379/0
+
+# Redis on a custom port, database 1
+--broker-url=redis://redis.internal:6380/1
+
+# TLS Redis
+--broker-url=rediss://redis.internal:6380/0
+
+# Sentinel
+--broker-url=sentinel://sentinel.service.consul/1
+```
+
+## Basic usage with Docker
+
+Run the exporter alongside Redis using Docker:
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0
+```
+
+You can also pass the broker URL as an environment variable using the `CE_` prefix:
+
+```bash
+docker run -p 9808:9808 \
+  -e CE_BROKER_URL=redis://redis:6379/0 \
+  danihodovic/celery-exporter
+```
+
+## Queue length tracking
+
+For Redis brokers, the exporter measures queue length by calling the Redis `LLEN` command on each known queue key. Celery stores queued task messages as Redis list entries, so `LLEN <queue_name>` returns the number of tasks waiting to be picked up by a worker.
+
+This is done on every Prometheus scrape (each `/metrics` request), reflecting the live queue depth at the time of the scrape.
+
+The resulting metric is `celery_queue_length` with a `queue_name` label:
+
+```promql
+celery_queue_length{queue_name="celery"}
+```
+
+<Note>
+Queue length tracking requires at least one worker to have been online since the exporter started, so the exporter can discover which queues exist. To pre-populate queues without waiting for a worker, use the `-Q` flag.
+</Note>
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0 \
+  -Q celery,priority,emails
+```
+
+## Transport options
+
+Use `--broker-transport-option` to pass Kombu Redis transport options to the exporter. Specify the flag multiple times for multiple options.
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=redis://redis:6379/0 \
+  --broker-transport-option visibility_timeout=7200 \
+  --broker-transport-option global_keyprefix=myapp \
+  --broker-transport-option socket_timeout=30 \
+  --broker-transport-option socket_connect_timeout=10
+```
+
+| Option | Description |
+|---|---|
+| `visibility_timeout` | Seconds a message is hidden from other workers after being picked up. Default is 3600. |
+| `global_keyprefix` | String prefix added to all Redis keys created by Celery. Useful when sharing a Redis instance across multiple applications. |
+| `socket_timeout` | Seconds to wait for a response from Redis before raising a timeout error. |
+| `socket_connect_timeout` | Seconds to wait when establishing the initial connection to Redis. |
+
+The full list of available options is documented in the [Kombu Redis transport reference](https://docs.celeryq.dev/projects/kombu/en/stable/reference/kombu.transport.redis.html).
+
+## Redis Sentinel setup
+
+Redis Sentinel provides automatic failover. Use the `sentinel://` scheme and pass `master_name` as a transport option. For Sentinel instances that require authentication, pass `sentinel_kwargs` as a JSON string.
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=sentinel://sentinel.service.consul/1 \
+  --broker-transport-option master_name=my_master \
+  --broker-transport-option sentinel_kwargs="{\"password\": \"sentinelpass\"}"
+```
+
+The exporter parses the `sentinel_kwargs` value as JSON and passes it directly to the Kombu transport layer.
+
+## TLS with rediss://
+
+Use the `rediss://` scheme for TLS-encrypted connections. If your Redis server requires client certificates or custom CA verification, pass the SSL options using `--broker-ssl-option`.
+
+```bash
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=rediss://redis.internal:6380/0 \
+  --broker-ssl-option certfile=/etc/ssl/certs/client.crt \
+  --broker-ssl-option keyfile=/etc/ssl/private/client.key \
+  --broker-ssl-option ca_certs=/etc/ssl/certs/ca-bundle.crt
+```
+
+To disable certificate verification (not recommended in production):
+
+```bash
+# ssl.CERT_NONE = 0
+docker run -p 9808:9808 danihodovic/celery-exporter \
+  --broker-url=rediss://redis.internal:6380/0 \
+  --broker-ssl-option cert_reqs=0
+```
+
+| SSL option | Description |
+|---|---|
+| `certfile` | Path to the client certificate PEM file |
+| `keyfile` | Path to the client private key PEM file |
+| `ca_certs` | Path to the CA certificate bundle PEM file |
+| `cert_reqs` | Certificate verification: `0` = none, `1` = optional, `2` = required |

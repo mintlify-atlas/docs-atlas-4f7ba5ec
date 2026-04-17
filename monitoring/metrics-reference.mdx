@@ -1,0 +1,494 @@
+---
+title: "Prometheus Metrics Reference for Celery Exporter"
+description: "Complete reference for all Prometheus metrics exposed by Celery Exporter: counters, gauges, histograms, labels, PromQL examples, and /metrics output format."
+---
+
+Celery Exporter exposes Prometheus metrics by consuming Celery's native real-time event API. This page documents every metric name, type, label set, and the event or condition that triggers it — along with example PromQL queries and a sample `/metrics` endpoint response.
+
+## Task event counters
+
+These counters increment each time Celery emits the corresponding task lifecycle event. All task counters carry the labels `name`, `hostname`, and `queue_name`. The `celery_task_failed_total` counter additionally carries `exception`.
+
+<Note>
+`celery_task_sent_total` is emitted by the process that publishes the task (a web server or producer), not the worker. Enable it in Celery config with `task_send_sent_event = True`. All other task events are emitted by the worker and work without extra configuration.
+</Note>
+
+<AccordionGroup>
+
+<Accordion title="celery_task_sent_total">
+
+**Type:** Counter
+
+**Description:** Incremented when a task message is published to the broker. This event originates from the task producer (e.g., a web request handler), not from the worker itself.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `name` | Fully qualified task name, e.g. `myapp.tasks.send_email` |
+| `hostname` | Hostname of the producer that published the task. Set to `generic` when `--generic-hostname-task-sent-metric` is enabled. |
+| `queue_name` | Name of the broker queue the task was published to |
+
+**Triggered by:** The `task-sent` Celery event. Requires `task_send_sent_event = True` in the Celery configuration.
+
+</Accordion>
+
+<Accordion title="celery_task_received_total">
+
+**Type:** Counter
+
+**Description:** Incremented when a worker picks up the task message from the broker queue and registers it in the event state.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `name` | Fully qualified task name |
+| `hostname` | Hostname of the worker that received the task |
+| `queue_name` | Name of the broker queue the task was consumed from |
+
+**Triggered by:** The `task-received` Celery event, emitted by the worker when it dequeues the message.
+
+</Accordion>
+
+<Accordion title="celery_task_started_total">
+
+**Type:** Counter
+
+**Description:** Incremented immediately before the worker begins executing the task function.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `name` | Fully qualified task name |
+| `hostname` | Hostname of the executing worker |
+| `queue_name` | Name of the broker queue |
+
+**Triggered by:** The `task-started` Celery event, emitted just before `Task.run()` is called.
+
+</Accordion>
+
+<Accordion title="celery_task_succeeded_total">
+
+**Type:** Counter
+
+**Description:** Incremented when the task function returns without raising an exception.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `name` | Fully qualified task name |
+| `hostname` | Hostname of the worker that executed the task |
+| `queue_name` | Name of the broker queue |
+
+**Triggered by:** The `task-succeeded` Celery event. When this event is received, the exporter also observes `celery_task_runtime` with the task's measured runtime.
+
+</Accordion>
+
+<Accordion title="celery_task_failed_total">
+
+**Type:** Counter
+
+**Description:** Incremented when the task function raises an unhandled exception. Includes an `exception` label with the exception class name extracted from the event payload.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `name` | Fully qualified task name |
+| `hostname` | Hostname of the worker |
+| `queue_name` | Name of the broker queue |
+| `exception` | Exception class name, e.g. `ValueError`, `ConnectionError`. Set to `UnknownException` if the class name cannot be parsed. |
+
+**Triggered by:** The `task-failed` Celery event.
+
+<Tip>
+Use the `exception` label to break down failure rates by root cause. For example, separate transient network errors from application logic errors.
+</Tip>
+
+</Accordion>
+
+<Accordion title="celery_task_rejected_total">
+
+**Type:** Counter
+
+**Description:** Incremented when a worker explicitly rejects a task message. Rejected tasks may be re-queued by the broker or routed to a dead letter queue depending on broker configuration.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `name` | Fully qualified task name |
+| `hostname` | Hostname of the worker |
+| `queue_name` | Name of the broker queue |
+
+**Triggered by:** The `task-rejected` Celery event.
+
+</Accordion>
+
+<Accordion title="celery_task_revoked_total">
+
+**Type:** Counter
+
+**Description:** Incremented when a task is revoked before or during execution, for example by calling `task.revoke()`.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `name` | Fully qualified task name |
+| `hostname` | Hostname of the worker |
+| `queue_name` | Name of the broker queue |
+
+**Triggered by:** The `task-revoked` Celery event.
+
+</Accordion>
+
+<Accordion title="celery_task_retried_total">
+
+**Type:** Counter
+
+**Description:** Incremented when a task fails but is scheduled to be retried. When a retry event fires, this counter increments and `celery_task_failed_total` is **not** incremented for that attempt — the retried counter covers the intermediate failure, while `celery_task_failed_total` only fires on a final unhandled failure.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `name` | Fully qualified task name |
+| `hostname` | Hostname of the worker |
+| `queue_name` | Name of the broker queue |
+
+**Triggered by:** The `task-retried` Celery event.
+
+</Accordion>
+
+</AccordionGroup>
+
+## Worker metrics
+
+Worker gauges are updated on each heartbeat event and when a worker comes online or goes offline. The exporter marks a worker as down (`0`) if no heartbeat is received within the configured timeout (default: 5 minutes).
+
+<AccordionGroup>
+
+<Accordion title="celery_worker_up">
+
+**Type:** Gauge
+
+**Description:** Set to `1` when a worker has sent a heartbeat recently. Set to `0` when the worker has not been heard from within the worker timeout window (default: 5 minutes) or when a `worker-offline` event is received.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `hostname` | Hostname of the worker, extracted from Celery's internal `workername@hostname` format |
+
+**Updated by:** `worker-heartbeat`, `worker-online`, and `worker-offline` events.
+
+</Accordion>
+
+<Accordion title="celery_worker_tasks_active">
+
+**Type:** Gauge
+
+**Description:** The number of tasks currently being processed by this worker. Updated on every heartbeat event with the live count from the worker's event state.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `hostname` | Hostname of the worker |
+
+**Updated by:** `worker-heartbeat` events. Reset to `0` when the worker is marked as timed out.
+
+</Accordion>
+
+</AccordionGroup>
+
+## Runtime histogram
+
+<AccordionGroup>
+
+<Accordion title="celery_task_runtime">
+
+**Type:** Histogram
+
+**Description:** Measures the wall-clock runtime of each successfully completed task in seconds. Prometheus exposes this as `celery_task_runtime_bucket`, `celery_task_runtime_sum`, and `celery_task_runtime_count`.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `name` | Fully qualified task name |
+| `hostname` | Hostname of the worker that executed the task |
+| `queue_name` | Name of the broker queue |
+
+**Triggered by:** The `task-succeeded` event. The runtime value comes directly from Celery's event payload (wall-clock seconds from task start to task end).
+
+**Default buckets:** Uses Prometheus client defaults — `.005`, `.01`, `.025`, `.05`, `.075`, `.1`, `.25`, `.5`, `.75`, `1.0`, `2.5`, `5.0`, `7.5`, `10.0`. Override with `--buckets` at startup.
+
+</Accordion>
+
+</AccordionGroup>
+
+## Queue metrics
+
+Queue metrics are collected on every `/metrics` scrape by inspecting the broker directly. They reflect the current state of each known queue.
+
+<Note>
+`celery_active_consumer_count` is only available for RabbitMQ and Qpid brokers. It returns `0` for Redis because Redis does not expose a consumer count per queue in the same way.
+</Note>
+
+<AccordionGroup>
+
+<Accordion title="celery_queue_length">
+
+**Type:** Gauge
+
+**Description:** The number of messages currently waiting in the broker queue. A high and growing queue length indicates workers are not keeping up with the workload.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `queue_name` | Name of the broker queue |
+
+**Updated:** On every Prometheus scrape (`/metrics` request).
+
+</Accordion>
+
+<Accordion title="celery_active_consumer_count">
+
+**Type:** Gauge
+
+**Description:** The number of active consumers subscribed to the queue. Available only for RabbitMQ and Qpid brokers.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `queue_name` | Name of the broker queue |
+
+**Updated:** On every Prometheus scrape.
+
+</Accordion>
+
+<Accordion title="celery_active_worker_count">
+
+**Type:** Gauge
+
+**Description:** The number of Celery workers currently subscribed to this queue.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `queue_name` | Name of the broker queue |
+
+**Updated:** On every Prometheus scrape by calling `inspect().active_queues()` on connected workers.
+
+</Accordion>
+
+<Accordion title="celery_active_process_count">
+
+**Type:** Gauge
+
+**Description:** The total number of worker processes subscribed to this queue. Each Celery worker may run with multiple processes (concurrency), so this value can be higher than `celery_active_worker_count`.
+
+**Labels:**
+
+| Label | Description |
+|-------|-------------|
+| `queue_name` | Name of the broker queue |
+
+**Updated:** On every Prometheus scrape by combining `inspect().active_queues()` and `inspect().stats()` results.
+
+</Accordion>
+
+</AccordionGroup>
+
+## Label configuration options
+
+### Custom metric prefix
+
+By default all metrics use the `celery_` prefix. Pass `--metric-prefix` at startup to override it. This affects every metric name.
+
+```bash
+celery-exporter --broker-url=redis://localhost:6379/0 \
+  --metric-prefix=myapp_celery_
+```
+
+With this flag, `celery_task_sent_total` becomes `myapp_celery_task_sent_total`.
+
+### Static labels
+
+Use `--static-label` to attach fixed key-value labels to every metric. This is useful for multi-tenant setups where you run multiple exporters and need to distinguish them in Prometheus.
+
+```bash
+celery-exporter --broker-url=redis://localhost:6379/0 \
+  --static-label=environment=production \
+  --static-label=region=us-east-1
+```
+
+All metrics will carry `environment="production"` and `region="us-east-1"` labels in addition to their standard labels.
+
+### Generic hostname for task-sent
+
+The `task-sent` event originates from task producers such as web servers. Because many hosts may publish tasks, the `hostname` label can create high label cardinality. Use `--generic-hostname-task-sent-metric` to replace all producer hostnames with the literal string `generic`.
+
+```bash
+celery-exporter --broker-url=redis://localhost:6379/0 \
+  --generic-hostname-task-sent-metric
+```
+
+<Warning>
+Without this flag, every unique producer hostname creates a new label combination for `celery_task_sent_total`. In environments with many ephemeral producers (e.g., auto-scaled web instances), this can cause cardinality issues in Prometheus.
+</Warning>
+
+## PromQL examples
+
+<AccordionGroup>
+
+<Accordion title="Task failure rate over 5 minutes">
+
+Calculate the percentage of tasks that failed over the last 5 minutes, grouped by task name and queue:
+
+```promql
+sum(
+  rate(celery_task_failed_total[5m])
+) by (name, queue_name)
+/
+(
+  sum(rate(celery_task_failed_total[5m])) by (name, queue_name)
+  +
+  sum(rate(celery_task_succeeded_total[5m])) by (name, queue_name)
+) * 100
+```
+
+</Accordion>
+
+<Accordion title="Task throughput by task name">
+
+Tasks completed successfully per second, broken down by task name:
+
+```promql
+sum(rate(celery_task_succeeded_total[5m])) by (name)
+```
+
+</Accordion>
+
+<Accordion title="Worker uptime status">
+
+Show which workers are currently up (`1`) or down (`0`):
+
+```promql
+celery_worker_up
+```
+
+Count how many workers are currently online:
+
+```promql
+sum(celery_worker_up)
+```
+
+</Accordion>
+
+<Accordion title="Queue depth trending">
+
+Current queue length per queue, useful for alerting on backlog growth:
+
+```promql
+celery_queue_length
+```
+
+Rate of queue length change (positive means tasks are accumulating):
+
+```promql
+deriv(celery_queue_length[10m])
+```
+
+</Accordion>
+
+<Accordion title="Average task runtime">
+
+Average task runtime in seconds per task name over the last 5 minutes:
+
+```promql
+sum(rate(celery_task_runtime_sum[5m])) by (name)
+/
+sum(rate(celery_task_runtime_count[5m])) by (name)
+```
+
+95th percentile runtime per task name:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum(rate(celery_task_runtime_bucket[5m])) by (name, le)
+)
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+## Sample /metrics output
+
+The following is representative output from `curl http://localhost:9808/metrics` with one worker running and a few tasks processed:
+
+```text
+# HELP celery_task_sent_total Sent when a task message is published.
+# TYPE celery_task_sent_total counter
+celery_task_sent_total{hostname="generic",name="myapp.tasks.send_email",queue_name="celery"} 42.0
+
+# HELP celery_task_received_total Sent when the worker receives a task.
+# TYPE celery_task_received_total counter
+celery_task_received_total{hostname="web01.internal",name="myapp.tasks.send_email",queue_name="celery"} 42.0
+
+# HELP celery_task_started_total Sent just before the worker executes the task.
+# TYPE celery_task_started_total counter
+celery_task_started_total{hostname="web01.internal",name="myapp.tasks.send_email",queue_name="celery"} 42.0
+
+# HELP celery_task_succeeded_total Sent if the task executed successfully.
+# TYPE celery_task_succeeded_total counter
+celery_task_succeeded_total{hostname="web01.internal",name="myapp.tasks.send_email",queue_name="celery"} 40.0
+
+# HELP celery_task_failed_total Sent if the execution of the task failed.
+# TYPE celery_task_failed_total counter
+celery_task_failed_total{exception="ConnectionError",hostname="web01.internal",name="myapp.tasks.send_email",queue_name="celery"} 2.0
+
+# HELP celery_task_retried_total Sent if the task failed, but will be retried in the future.
+# TYPE celery_task_retried_total counter
+celery_task_retried_total{hostname="web01.internal",name="myapp.tasks.send_email",queue_name="celery"} 1.0
+
+# HELP celery_worker_up Indicates if a worker has recently sent a heartbeat.
+# TYPE celery_worker_up gauge
+celery_worker_up{hostname="web01.internal"} 1.0
+
+# HELP celery_worker_tasks_active The number of tasks the worker is currently processing
+# TYPE celery_worker_tasks_active gauge
+celery_worker_tasks_active{hostname="web01.internal"} 3.0
+
+# HELP celery_task_runtime_bucket Histogram of task runtime measurements.
+# TYPE celery_task_runtime_bucket histogram
+celery_task_runtime_bucket{hostname="web01.internal",le="0.005",name="myapp.tasks.send_email",queue_name="celery"} 0.0
+celery_task_runtime_bucket{hostname="web01.internal",le="0.01",name="myapp.tasks.send_email",queue_name="celery"} 0.0
+celery_task_runtime_bucket{hostname="web01.internal",le="0.025",name="myapp.tasks.send_email",queue_name="celery"} 0.0
+celery_task_runtime_bucket{hostname="web01.internal",le="0.05",name="myapp.tasks.send_email",queue_name="celery"} 0.0
+celery_task_runtime_bucket{hostname="web01.internal",le="+Inf",name="myapp.tasks.send_email",queue_name="celery"} 40.0
+celery_task_runtime_sum{hostname="web01.internal",name="myapp.tasks.send_email",queue_name="celery"} 82.451
+celery_task_runtime_count{hostname="web01.internal",name="myapp.tasks.send_email",queue_name="celery"} 40.0
+
+# HELP celery_queue_length The number of message in broker queue.
+# TYPE celery_queue_length gauge
+celery_queue_length{queue_name="celery"} 5.0
+
+# HELP celery_active_worker_count The number of active workers in broker queue.
+# TYPE celery_active_worker_count gauge
+celery_active_worker_count{queue_name="celery"} 1.0
+
+# HELP celery_active_process_count The number of active processes in broker queue.
+# TYPE celery_active_process_count gauge
+celery_active_process_count{queue_name="celery"} 4.0
+```
